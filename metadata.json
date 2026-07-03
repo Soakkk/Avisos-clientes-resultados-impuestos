@@ -1,0 +1,6 @@
+{
+  "name": "Generador de Avisos de Impuestos",
+  "description": "Generador de avisos de impuestos para asesorías. Procesa capturas de pantalla de la AEAT, extrae datos del modelo, calcula plazos de domiciliación y genera textos profesionales para WhatsApp e imágenes listas para enviar.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
