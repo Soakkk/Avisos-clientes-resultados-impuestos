@@ -92,10 +92,11 @@ Para ejecutar esta aplicación en Windows como un programa instalable de escrito
    npm install
    ```
 3. Configura tu API Key de Gemini:
-   Crea un archivo llamado `.env` en la raíz del proyecto y pon tu clave de la API de Google Gemini (puedes conseguir una gratis en Google AI Studio):
-   ```env
-   GEMINI_API_KEY=tu_clave_api_secreta_aqui
-   ```
+   Ya no hace falta crear ningún archivo `.env` a mano. Al abrir la app (en desarrollo o ya instalada), pulsa el botón
+   **"Configurar API Key"** de la cabecera y pega tu clave de Google Gemini (gratis en Google AI Studio). Se guarda
+   de forma local en `%USERPROFILE%\.generador-avisos-fiscales\config.json` en tu propio PC, y sobrevive a
+   reinstalaciones/actualizaciones del programa. Si prefieres seguir usando un `.env` en desarrollo, sigue
+   funcionando como variable de respaldo (`GEMINI_API_KEY=...`), pero la clave guardada desde Ajustes tiene prioridad.
 4. **Genera el instalador de Windows `.exe`**:
    Ejecuta el comando de empaquetado automatizado:
    ```bash

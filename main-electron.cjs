@@ -1,6 +1,7 @@
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, dialog } = require('electron');
 const path = require('path');
 const http = require('http');
+const { autoUpdater } = require('electron-updater');
 
 let mainWindow;
 let expressAppProcess;
@@ -19,12 +20,17 @@ function checkServerReady(url, callback) {
 }
 
 function startExpressServer() {
+  // Only start the bundled server when running as a packaged .exe.
+  // In "npm run electron:dev" the server is already running separately
+  // via "npm run dev" (tsx server.ts) on the same port, so requiring the
+  // bundled file here would just fail trying to bind an already-used port.
+  if (!app.isPackaged) {
+    console.log('Modo desarrollo: usando el servidor de "npm run dev" ya iniciado.');
+    return;
+  }
+
   try {
-    // In production, we run the bundled commonjs file from dist/server.cjs
-    // Set environment variable to production so Express knows to serve static built files
     process.env.NODE_ENV = 'production';
-    
-    // Require the bundled server. This will start the Express app on port 3000
     require('./dist/server.cjs');
     console.log('Servidor Express local iniciado correctamente desde Electron.');
   } catch (err) {
@@ -36,8 +42,8 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
-    title: 'Generador de Avisos de Impuestos',
-    icon: path.join(__dirname, 'dist', 'favicon.ico'), // Optional icon
+    title: 'Generador de Avisos Fiscales',
+    icon: path.join(__dirname, 'assets', 'app.ico'),
     autoHideMenuBar: true,
     webPreferences: {
       nodeIntegration: false,
@@ -68,13 +74,63 @@ function createWindow() {
   });
 }
 
+// ---- Actualizaciones automáticas vía GitHub Releases ----
+// Mismo flujo que EscanerFotos: comprobar en segundo plano, preguntar antes de
+// descargar, barra de progreso, e instalar en silencio (reabre la app sola).
+autoUpdater.autoDownload = false;
+autoUpdater.autoInstallOnAppQuit = false;
+
+function comprobarActualizaciones() {
+  if (!app.isPackaged) return; // solo tiene sentido en el .exe instalado
+
+  autoUpdater.checkForUpdates().catch(() => {
+    // Sin internet o error de red: fallamos en silencio, como EscanerFotos.
+  });
+}
+
+autoUpdater.on('update-available', async (info) => {
+  const { response } = await dialog.showMessageBox(mainWindow, {
+    type: 'info',
+    title: 'Actualización disponible',
+    message: `Hay una versión nueva de Generador de Avisos Fiscales (${info.version}).`,
+    detail: '¿Descargar e instalar ahora?',
+    buttons: ['Sí', 'Más tarde'],
+    defaultId: 0,
+    cancelId: 1,
+  });
+  if (response === 0) {
+    autoUpdater.downloadUpdate().catch(() => {
+      dialog.showMessageBox(mainWindow, {
+        type: 'warning',
+        title: 'Actualización',
+        message: 'No se pudo descargar la actualización. Revisa tu conexión e inténtalo más tarde.',
+      });
+    });
+  }
+});
+
+autoUpdater.on('download-progress', (progress) => {
+  if (mainWindow) mainWindow.setProgressBar(progress.percent / 100);
+});
+
+autoUpdater.on('update-downloaded', () => {
+  if (mainWindow) mainWindow.setProgressBar(-1);
+  autoUpdater.quitAndInstall();
+});
+
+autoUpdater.on('error', () => {
+  if (mainWindow) mainWindow.setProgressBar(-1);
+  // Silencioso: igual que EscanerFotos, no molestamos si falla la comprobación.
+});
+
 // Start local Express server first, then boot the Electron window
 app.whenReady().then(() => {
   // Start server
   startExpressServer();
-  
+
   // Create Electron Window
   createWindow();
+  comprobarActualizaciones();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

@@ -2,7 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { TaxNotice, JointNotice, calculateAEATDeadlines, formatDateSpanish } from './types';
 import { LoaderOverlay } from './components/LoaderOverlay';
 import { NoticeEditor } from './components/NoticeEditor';
-import { NoticeCardCanvas } from './components/NoticeCardCanvas';
+import { NoticeCard, CardFormat } from './components/NoticeCard';
+import { ApiKeySettings } from './components/ApiKeySettings';
 import { 
   Clipboard, 
   Upload, 
@@ -18,7 +19,8 @@ import {
   Calendar, 
   Info,
   ExternalLink,
-  Edit2
+  Edit2,
+  Star
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -31,16 +33,20 @@ export default function App() {
   const [copiedTextId, setCopiedTextId] = useState<string | null>(null);
   
   // Custom settings saved in LocalStorage
-  const [agencyName, setAgencyName] = useState('Su Asesoría Fiscal');
-  const [signatureText, setSignatureText] = useState('Atentamente,\nSu Asesoría Fiscal');
+  const [agencyName, setAgencyName] = useState('Asesoría E. Marín');
+  const [signatureText, setSignatureText] = useState('Atentamente,\nAsesoría E. Marín');
+  const [cardFormat, setCardFormat] = useState<CardFormat>('A');
 
   // Loading settings and initial state from localStorage
   useEffect(() => {
     const savedAgency = localStorage.getItem('aeat_agency_name');
     if (savedAgency) setAgencyName(savedAgency);
-    
+
     const savedSignature = localStorage.getItem('aeat_signature_text');
     if (savedSignature) setSignatureText(savedSignature);
+
+    const savedFormat = localStorage.getItem('aeat_card_format');
+    if (savedFormat === 'A' || savedFormat === 'B' || savedFormat === 'C') setCardFormat(savedFormat);
 
     const savedNotices = localStorage.getItem('aeat_raw_notices');
     if (savedNotices) {
@@ -63,6 +69,11 @@ export default function App() {
     localStorage.setItem('aeat_agency_name', val);
   };
 
+  const handleCardFormatChange = (val: CardFormat) => {
+    setCardFormat(val);
+    localStorage.setItem('aeat_card_format', val);
+  };
+
   const handleSignatureChange = (val: string) => {
     setSignatureText(val);
     localStorage.setItem('aeat_signature_text', val);
@@ -71,7 +82,7 @@ export default function App() {
   // Helper to load sample data from the user request
   const loadExampleData = () => {
     const sampleNotice: TaxNotice = {
-      id: 'sample-303',
+      id: 'sample-' + Math.random().toString(36).substring(2, 9),
       modelo: '303',
       modelo_nombre: 'Impuesto sobre el Valor Añadido (IVA Trimestral)',
       periodo: '2T',
@@ -417,6 +428,7 @@ export default function App() {
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            <ApiKeySettings />
             <button
               onClick={loadExampleData}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-100 transition-all"
@@ -511,8 +523,47 @@ export default function App() {
                   className="w-full px-3 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-slate-800 bg-slate-50/50"
                   value={agencyName}
                   onChange={(e) => handleAgencyNameChange(e.target.value)}
-                  placeholder="Ej. Maldonado Consultores"
+                  placeholder="Ej. Asesoría E. Marín"
                 />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold text-slate-500 mb-1.5 uppercase tracking-wider">
+                  Formato de la ficha (imagen)
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  {([
+                    { id: 'A' as CardFormat, name: 'Equilibrado' },
+                    { id: 'B' as CardFormat, name: 'Recibo' },
+                    { id: 'C' as CardFormat, name: 'Una ojeada' },
+                  ]).map((f) => {
+                    const isFav = cardFormat === f.id;
+                    return (
+                      <button
+                        key={f.id}
+                        onClick={() => handleCardFormatChange(f.id)}
+                        className={`relative px-2 py-2 rounded-lg border text-center transition-all ${
+                          isFav
+                            ? 'border-slate-800 bg-slate-800 text-white'
+                            : 'border-slate-200 bg-slate-50/50 text-slate-600 hover:border-slate-400'
+                        }`}
+                        id={`btn-format-${f.id}`}
+                        title={isFav ? 'Formato favorito (se usa siempre)' : 'Marcar como favorito'}
+                      >
+                        <Star
+                          className={`absolute top-1.5 right-1.5 w-3 h-3 ${isFav ? 'text-amber-400' : 'text-slate-300'}`}
+                          fill={isFav ? 'currentColor' : 'none'}
+                        />
+                        <span className="block text-sm font-bold">{f.id}</span>
+                        <span className="block text-[10px] font-medium mt-0.5 leading-tight">{f.name}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="text-[10px] text-slate-400 mt-1.5 flex items-center gap-1">
+                  <Star className="w-2.5 h-2.5 text-amber-400" fill="currentColor" />
+                  <span>El formato con estrella se usa siempre en todas las fichas hasta que elijas otro.</span>
+                </p>
               </div>
 
               <div>
@@ -739,9 +790,9 @@ export default function App() {
                         </div>
                       ) : (
                         <div className="flex flex-col items-center">
-                          <NoticeCardCanvas 
-                            notice={joint} 
-                            agencyName={agencyName} 
+                          <NoticeCard
+                            notice={joint}
+                            format={cardFormat}
                           />
                         </div>
                       )}

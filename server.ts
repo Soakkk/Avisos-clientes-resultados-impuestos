@@ -1,8 +1,9 @@
 import express from "express";
 import path from "path";
+import fs from "fs";
+import os from "os";
 import dotenv from "dotenv";
 import { GoogleGenAI, Type } from "@google/genai";
-import { createServer as createViteServer } from "vite";
 
 // Load environment variables in development
 dotenv.config();
@@ -13,37 +14,116 @@ const PORT = 3000;
 // Increase payload limit to handle base64 images
 app.use(express.json({ limit: "20mb" }));
 
+// Local, per-PC storage for the Gemini API key (set via the in-app Settings screen).
+// This lives outside the installed app folder so it survives updates/reinstalls
+// and works both in "npm run dev" and in the packaged .exe.
+const CONFIG_DIR = path.join(os.homedir(), ".generador-avisos-fiscales");
+const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
+
+function loadStoredApiKey(): string | undefined {
+  try {
+    if (fs.existsSync(CONFIG_FILE)) {
+      const raw = fs.readFileSync(CONFIG_FILE, "utf-8");
+      const parsed = JSON.parse(raw);
+      return parsed.apiKey || undefined;
+    }
+  } catch (err) {
+    console.error("No se pudo leer la configuración local:", err);
+  }
+  return undefined;
+}
+
+function saveApiKeyLocally(apiKey: string) {
+  fs.mkdirSync(CONFIG_DIR, { recursive: true });
+  fs.writeFileSync(CONFIG_FILE, JSON.stringify({ apiKey }, null, 2), "utf-8");
+}
+
 // Initialize Gemini API client safely
 // Note: User-Agent set to 'aistudio-build' as required
 let ai: GoogleGenAI | null = null;
-try {
-  if (process.env.GEMINI_API_KEY) {
+
+function initGemini(apiKey: string) {
+  try {
     ai = new GoogleGenAI({
-      apiKey: process.env.GEMINI_API_KEY,
+      apiKey,
       httpOptions: {
         headers: {
           'User-Agent': 'aistudio-build',
         }
       }
     });
-  } else {
-    console.warn("WARNING: GEMINI_API_KEY is not defined in the environment.");
+  } catch (err) {
+    console.error("Failed to initialize GoogleGenAI:", err);
+    ai = null;
   }
-} catch (err) {
-  console.error("Failed to initialize GoogleGenAI:", err);
 }
 
-// API: Check health
+const initialApiKey = loadStoredApiKey() || process.env.GEMINI_API_KEY;
+if (initialApiKey) {
+  initGemini(initialApiKey);
+} else {
+  console.warn("WARNING: No hay ninguna clave de Gemini configurada todavía.");
+}
+
+// API: Check health / whether Gemini is ready to use
 app.get("/api/health", (req, res) => {
-  res.json({ status: "ok", geminiConfigured: !!process.env.GEMINI_API_KEY });
+  res.json({ status: "ok", geminiConfigured: !!ai });
+});
+
+// API: Read current config state (never returns the raw key back to the frontend)
+app.get("/api/config", (req, res) => {
+  res.json({ hasApiKey: !!ai });
+});
+
+// API: Save/update the Gemini API key from the Settings screen
+app.post("/api/config", (req, res) => {
+  const { apiKey } = req.body;
+  if (!apiKey || typeof apiKey !== "string" || !apiKey.trim()) {
+    return res.status(400).json({ error: "La clave de API no puede estar vacía." });
+  }
+  try {
+    saveApiKeyLocally(apiKey.trim());
+    initGemini(apiKey.trim());
+    res.json({ success: true, hasApiKey: !!ai });
+  } catch (err: any) {
+    console.error("Error guardando la clave de API:", err);
+    res.status(500).json({ error: "No se pudo guardar la clave de API en este equipo." });
+  }
 });
 
 // API: Analyze Tax Image using Gemini 3.5 Flash
+function isRetryableGeminiError(error: any): boolean {
+  const text = String(error?.message || error || "");
+  return text.includes("503") || text.includes("UNAVAILABLE") || text.includes("overloaded") || text.includes("high demand");
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Gemini a veces devuelve 503 ("high demand") cuando el modelo está saturado.
+// Es un error temporal de Google, no del código: reintentamos con espera creciente.
+async function generateContentWithRetry(params: Parameters<GoogleGenAI["models"]["generateContent"]>[0]) {
+  const maxAttempts = 3;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await ai!.models.generateContent(params);
+    } catch (error: any) {
+      const isLastAttempt = attempt === maxAttempts;
+      if (!isRetryableGeminiError(error) || isLastAttempt) throw error;
+      const waitMs = 1500 * attempt;
+      console.warn(`Gemini saturado (intento ${attempt}/${maxAttempts}), reintentando en ${waitMs}ms...`);
+      await sleep(waitMs);
+    }
+  }
+  throw new Error("No se pudo contactar con Gemini tras varios intentos.");
+}
+
 app.post("/api/gemini/analyze-tax", async (req, res) => {
   try {
     if (!ai) {
-      return res.status(500).json({ 
-        error: "El servicio de IA no está configurado. Por favor, asegúrese de que la clave GEMINI_API_KEY esté presente en la sección de secretos." 
+      return res.status(500).json({
+        error: "El servicio de IA no está configurado. Ve a 'Ajustes' y pega tu clave de la API de Gemini."
       });
     }
 
@@ -61,7 +141,7 @@ app.post("/api/gemini/analyze-tax", async (req, res) => {
       "el período (ej. 2T, 3T, 1T, 01, 12, etc.), el NIF del cliente, el nombre completo del cliente, el importe total a ingresar o devolver, " +
       "la modalidad de pago (especialmente si es Domiciliación o Ingreso) y el IBAN si figura en pantalla (limpiando espacios).";
 
-    const response = await ai.models.generateContent({
+    const response = await generateContentWithRetry({
       model: "gemini-3.5-flash",
       contents: [
         {
@@ -128,15 +208,19 @@ app.post("/api/gemini/analyze-tax", async (req, res) => {
     return res.json(parsedData);
   } catch (error: any) {
     console.error("Error analyzing tax image with Gemini:", error);
-    return res.status(500).json({ 
-      error: "Error al procesar la imagen con Gemini: " + (error.message || error) 
-    });
+    const message = isRetryableGeminiError(error)
+      ? "Gemini está saturado en este momento (mucha demanda en Google). Espere unos segundos y vuelva a pegar la captura."
+      : "Error al procesar la imagen con Gemini: " + (error.message || error);
+    return res.status(503).json({ error: message });
   }
 });
 
 // Setup Vite development middleware or serve production build assets
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
+    // Loaded dynamically so the production bundle (used inside the packaged .exe,
+    // which doesn't ship devDependencies) never needs to resolve 'vite' at all.
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
@@ -150,7 +234,9 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  // Bind only to localhost: this is a private desktop app, no other device
+  // on the network should be able to reach it or spend your Gemini quota.
+  app.listen(PORT, "127.0.0.1", () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
 }
