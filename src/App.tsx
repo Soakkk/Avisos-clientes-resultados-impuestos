@@ -37,6 +37,15 @@ export default function App() {
   const [agencyName, setAgencyName] = useState('Asesoría E. Marín');
   const [signatureText, setSignatureText] = useState('Atentamente,\nAsesoría E. Marín');
   const [cardFormat, setCardFormat] = useState<CardFormat>('A');
+  const [appVersion, setAppVersion] = useState('');
+
+  // Versión instalada (la expone el servidor en /api/health)
+  useEffect(() => {
+    fetch('/api/health')
+      .then((r) => r.json())
+      .then((d) => { if (d.version) setAppVersion(d.version); })
+      .catch(() => {});
+  }, []);
 
   // Loading settings and initial state from localStorage
   useEffect(() => {
@@ -425,8 +434,13 @@ export default function App() {
               <Clipboard className="w-5 h-5" />
             </div>
             <div>
-              <h1 className="font-display text-lg font-bold text-slate-900 tracking-tight leading-tight">
+              <h1 className="font-display text-lg font-bold text-slate-900 tracking-tight leading-tight flex items-center gap-2">
                 Generador de Avisos Fiscales
+                {appVersion && (
+                  <span className="px-1.5 py-0.5 rounded bg-slate-100 border border-slate-200 text-[10px] font-mono font-semibold text-slate-500">
+                    v{appVersion}
+                  </span>
+                )}
               </h1>
               <p className="text-slate-500 text-[11px] font-medium">
                 Confección de mensajes y recibos oficiales de impuestos

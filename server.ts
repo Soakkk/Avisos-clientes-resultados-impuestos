@@ -11,6 +11,17 @@ dotenv.config();
 const app = express();
 const PORT = 3000;
 
+// Versión de la app: en el .exe la inyecta Electron (APP_VERSION = app.getVersion());
+// en desarrollo se lee de package.json.
+const APP_VERSION = (() => {
+  if (process.env.APP_VERSION) return process.env.APP_VERSION;
+  try {
+    return JSON.parse(fs.readFileSync(path.join(process.cwd(), "package.json"), "utf-8")).version || "dev";
+  } catch {
+    return "dev";
+  }
+})();
+
 // Increase payload limit to handle base64 images
 app.use(express.json({ limit: "20mb" }));
 
@@ -67,7 +78,7 @@ if (initialApiKey) {
 
 // API: Check health / whether Gemini is ready to use
 app.get("/api/health", (req, res) => {
-  res.json({ status: "ok", geminiConfigured: !!ai });
+  res.json({ status: "ok", geminiConfigured: !!ai, version: APP_VERSION });
 });
 
 // API: Read current config state (never returns the raw key back to the frontend)

@@ -31,6 +31,7 @@ function startExpressServer() {
 
   try {
     process.env.NODE_ENV = 'production';
+    process.env.APP_VERSION = app.getVersion();
     require('./dist/server.cjs');
     console.log('Servidor Express local iniciado correctamente desde Electron.');
   } catch (err) {
