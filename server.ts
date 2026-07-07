@@ -104,10 +104,11 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Corta la espera si Gemini no responde en este tiempo, en vez de colgar la app
-// para siempre (p. ej. por un corte de red o un firewall que descarta paquetes
-// en silencio). Cuenta como fallo "reintentable", igual que un 503.
-const GEMINI_TIMEOUT_MS = 45_000;
+// Corta la espera si Gemini no responde en este tiempo. Se ha comprobado que la
+// API se cuelga de forma intermitente en las llamadas con imagen (no responde ni
+// da error). Las llamadas correctas tardan ~8-15s, así que 30s separa bien un
+// cuelgue de una respuesta lenta legítima. Cuenta como fallo "reintentable".
+const GEMINI_TIMEOUT_MS = 30_000;
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("TIMEOUT_GEMINI: sin respuesta de Gemini")), ms);
@@ -121,7 +122,9 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 // Gemini a veces devuelve 503 ("high demand") cuando el modelo está saturado.
 // Es un error temporal de Google, no del código: reintentamos con espera creciente.
 async function generateContentWithRetry(params: Parameters<GoogleGenAI["models"]["generateContent"]>[0]) {
-  const maxAttempts = 3;
+  // 4 intentos: los cuelgues son intermitentes (~1 de cada 3), así que casi
+  // siempre entra a la segunda o tercera antes de agotar los reintentos.
+  const maxAttempts = 4;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       return await withTimeout(ai!.models.generateContent(params), GEMINI_TIMEOUT_MS);
@@ -159,7 +162,11 @@ app.post("/api/gemini/analyze-tax", async (req, res) => {
       "la modalidad de pago (especialmente si es Domiciliación o Ingreso) y el IBAN si figura en pantalla (limpiando espacios).";
 
     const response = await generateContentWithRetry({
-      model: "gemini-3.5-flash",
+      // gemini-2.5-flash en vez de 3.5-flash: se comprobó que 3.5-flash se cuelga
+      // de forma sistemática en las llamadas con imagen (no responde), mientras
+      // que 2.5-flash las resuelve en 1-3s de forma fiable. Es la causa real del
+      // "se queda en generando aviso...".
+      model: "gemini-2.5-flash",
       contents: [
         {
           inlineData: {
@@ -226,9 +233,16 @@ app.post("/api/gemini/analyze-tax", async (req, res) => {
   } catch (error: any) {
     console.error("Error analyzing tax image with Gemini:", error);
     const text = String(error?.message || error || "");
+    const lower = text.toLowerCase();
     let message: string;
     if (text.includes("TIMEOUT_GEMINI")) {
-      message = "No se ha recibido respuesta de Gemini a tiempo (posible problema de conexión a internet). Compruebe su red e inténtelo de nuevo.";
+      message = "Gemini no ha respondido tras varios intentos (a veces se satura o se cuelga). Vuelva a pegar la captura en unos segundos.";
+    } else if (text.includes("429") || lower.includes("quota") || lower.includes("rate limit")) {
+      message = "Ha alcanzado el límite de uso de la clave de Gemini (cuota). Espere un minuto y vuelva a intentarlo, o use una clave con más cuota.";
+    } else if (text.includes("400") || text.includes("401") || text.includes("403") ||
+               lower.includes("api key") || lower.includes("api_key") || lower.includes("invalid") ||
+               lower.includes("expired") || lower.includes("permission")) {
+      message = "La clave de Gemini no es válida o ha caducado. Ve a 'Ajustes' y pega una clave nueva de Google AI Studio (empieza por 'AIza').";
     } else if (isRetryableGeminiError(error)) {
       message = "Gemini está saturado en este momento (mucha demanda en Google). Espere unos segundos y vuelva a pegar la captura.";
     } else {

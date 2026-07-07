@@ -28,6 +28,7 @@ export default function App() {
   const [rawNotices, setRawNotices] = useState<TaxNotice[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadingStep, setLoadingStep] = useState(0);
+  const [takingLong, setTakingLong] = useState(false);
   const [editingJointId, setEditingJointId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<Record<string, 'text' | 'image'>>({});
   const [copiedTextId, setCopiedTextId] = useState<string | null>(null);
@@ -110,10 +111,14 @@ export default function App() {
   const processImageFile = async (file: File) => {
     setLoading(true);
     setLoadingStep(0);
+    setTakingLong(false);
 
     const stepInterval = setInterval(() => {
       setLoadingStep((prev) => Math.min(prev + 1, 5));
     }, 1200);
+
+    // Si Gemini se cuelga y hay que reintentar, avisamos para que no parezca colgado
+    const longTimer = setTimeout(() => setTakingLong(true), 14000);
 
     try {
       // 1. Convert file to base64
@@ -169,6 +174,8 @@ export default function App() {
       alert(`Error al analizar la imagen: ${err.message || err}`);
     } finally {
       clearInterval(stepInterval);
+      clearTimeout(longTimer);
+      setTakingLong(false);
       setLoading(false);
     }
   };
@@ -407,7 +414,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-slate-50/50 pb-20">
       <AnimatePresence>
-        {loading && <LoaderOverlay step={loadingStep} />}
+        {loading && <LoaderOverlay step={loadingStep} takingLong={takingLong} />}
       </AnimatePresence>
 
       {/* Header Bar */}

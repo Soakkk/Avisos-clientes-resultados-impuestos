@@ -1,9 +1,10 @@
 import React from 'react';
-import { Loader2 } from 'lucide-react';
+import { Loader2, Info } from 'lucide-react';
 import { motion } from 'motion/react';
 
 interface LoaderOverlayProps {
   step: number;
+  takingLong?: boolean;
 }
 
 const STEPS = [
@@ -15,7 +16,7 @@ const STEPS = [
   "Generando aviso personalizado..."
 ];
 
-export const LoaderOverlay: React.FC<LoaderOverlayProps> = ({ step }) => {
+export const LoaderOverlay: React.FC<LoaderOverlayProps> = ({ step, takingLong }) => {
   return (
     <motion.div 
       initial={{ opacity: 0 }}
@@ -53,6 +54,15 @@ export const LoaderOverlay: React.FC<LoaderOverlayProps> = ({ step }) => {
         <div className="mt-4 text-[11px] font-mono text-slate-400">
           Paso {step + 1} de {STEPS.length}
         </div>
+
+        {takingLong && (
+          <div className="mt-5 flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2.5 text-left">
+            <Info className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+            <p className="text-[11px] text-amber-800 leading-relaxed">
+              Gemini está tardando más de lo normal. La app lo está reintentando sola, no cierres esta ventana. Un momento…
+            </p>
+          </div>
+        )}
       </div>
     </motion.div>
   );
