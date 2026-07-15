@@ -18,7 +18,14 @@ export interface TaxNotice {
   cliente_nif: string;
   cliente_nombre: string;
   importe: number;
-  tipo_resultado: 'Domiciliación' | 'A ingresar' | 'A compensar' | 'Resultado cero / Sin actividad' | 'Devolución';
+  /**
+   * 'Resultado negativo': la declaración sale negativa y no se paga nada. Es lo
+   * típico del 130/131 cuando la actividad ha tenido pocos ingresos: el importe
+   * no lo devuelve Hacienda, se descuenta en los trimestres siguientes del mismo
+   * ejercicio (casilla [15] del propio modelo). No confundir con 'Devolución',
+   * que es la única en la que la AEAT ingresa dinero al cliente.
+   */
+  tipo_resultado: 'Domiciliación' | 'A ingresar' | 'A compensar' | 'Resultado negativo' | 'Resultado cero / Sin actividad' | 'Devolución';
   iban?: string;
   screenshotUrl?: string; // miniatura JPEG comprimida (base64 pequeño)
   screenshotId?: string; // id de la captura original guardada en disco (/api/capturas/:id)

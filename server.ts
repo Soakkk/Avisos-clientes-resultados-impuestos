@@ -289,7 +289,11 @@ const TAX_SCHEMA = {
     },
     tipo_resultado: {
       type: Type.STRING,
-      description: "Tipo de resultado. Debe ser exactamente uno de estos valores: 'Domiciliación', 'A ingresar', 'A compensar', 'Resultado cero / Sin actividad', 'Devolución'"
+      description: "Tipo de resultado. Debe ser exactamente uno de estos valores: 'Domiciliación', 'A ingresar', 'A compensar', 'Resultado negativo', 'Resultado cero / Sin actividad', 'Devolución'. " +
+        "Usa 'Resultado negativo' cuando el resultado de la declaración sea NEGATIVO y la AEAT no devuelva nada, sino que ese importe se descuente en declaraciones posteriores: " +
+        "es el caso típico del modelo 130/131 con resultado negativo (aparece marcado como 'Negativa' o 'A deducir', y se arrastra a la casilla 'A deducir trimestres anteriores' del ejercicio). " +
+        "Usa 'Devolución' SOLO si la AEAT va a ingresar el dinero al cliente (casilla de devolución con cuenta de abono), nunca por el mero hecho de que el importe sea negativo. " +
+        "Usa 'A compensar' para el IVA (modelo 303) con saldo a compensar en periodos siguientes."
     },
     iban: {
       type: Type.STRING,

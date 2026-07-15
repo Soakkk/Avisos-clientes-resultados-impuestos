@@ -386,11 +386,25 @@ export default function App() {
 
   const groupedNotices = getGroupedNotices(rawNotices);
 
+  // Resultados en los que el cliente no paga nada: el importe no se ingresa ni
+  // lo devuelve Hacienda, se arrastra a declaraciones posteriores. Sin esto, a
+  // un 130 negativo se le pedía "realice el pago antes de la fecha límite".
+  const SIN_PAGO = ['A compensar', 'Resultado negativo', 'Resultado cero / Sin actividad'];
+
+  // Cómo se nombra cada resultado de cara al cliente: "Resultado negativo" es el
+  // valor interno, pero en el aviso queda mejor "Negativa" (igual que en la ficha).
+  const RESULTADO_CLIENTE: Record<string, string> = {
+    'Resultado negativo': 'Negativa',
+    'Resultado cero / Sin actividad': 'Sin actividad',
+  };
+  const nombreResultado = (t: string) => RESULTADO_CLIENTE[t] || t;
+
   // Generate WhatsApp message string
   const generateWhatsAppText = (joint: JointNotice): string => {
     const isIndividual = joint.notices.length === 1;
     const firstNotice = joint.notices[0];
     const periodText = `${firstNotice?.periodo} / ${firstNotice?.ejercicio}`;
+    const nadaQuePagar = joint.notices.length > 0 && joint.notices.every((t) => SIN_PAGO.includes(t.tipo_resultado));
 
     let chargeDateText = "la establecida por la AEAT";
     if (joint.notices.length > 0) {
@@ -411,7 +425,7 @@ export default function App() {
       text += `*Detalle de la liquidación*:\n`;
       text += `• *Impuesto*: Modelo ${tax.modelo}\n`;
       text += `• *Importe*: *${amountFormatted} €*\n`;
-      text += `• *Resultado*: *${tax.tipo_resultado}*\n`;
+      text += `• *Resultado*: *${nombreResultado(tax.tipo_resultado)}*\n`;
       
       if (isDomiciliacion) {
         if (joint.iban) {
@@ -420,6 +434,15 @@ export default function App() {
         }
         text += `• *Fecha de cargo en cuenta (AEAT)*: *${chargeDateText}*\n\n`;
         text += `⚠️ *Importe Domiciliado*: Rogamos se asegure de disponer de saldo suficiente en su cuenta para el día del cargo para evitar recargos por parte de la Agencia Tributaria.\n\n`;
+      } else if (tax.tipo_resultado === 'Resultado negativo') {
+        // 130/131 negativo: el arrastre es solo dentro del mismo ejercicio.
+        const esPagoFraccionado = tax.modelo === '130' || tax.modelo === '131';
+        text += `\n✅ *No tiene que pagar nada*: la declaración sale *negativa*, así que este ${esPagoFraccionado ? 'trimestre' : 'periodo'} no hay ningún ingreso que hacer.\n\n`;
+        text += `Ese importe no se pierde: ${esPagoFraccionado
+          ? 'se descontará en sus próximos pagos fraccionados de este mismo año.'
+          : 'se descontará en sus próximas declaraciones.'}\n\n`;
+      } else if (SIN_PAGO.includes(tax.tipo_resultado)) {
+        text += `\n✅ *No tiene que pagar nada* este periodo.${tax.tipo_resultado === 'A compensar' ? ' El saldo a su favor se descontará automáticamente en sus próximas declaraciones.' : ''}\n\n`;
       } else {
         text += `• *Fecha límite de presentación*: *${chargeDateText}*\n\n`;
         text += `⚠️ *Atención*: Al no estar domiciliado, recuerde realizar el pago correspondiente antes de la fecha límite señalada para evitar incidencias con la AEAT.\n\n`;
@@ -432,7 +455,7 @@ export default function App() {
       
       joint.notices.forEach((tax) => {
         const amtFormatted = tax.importe.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-        text += `• *Modelo ${tax.modelo}* (${tax.modelo_nombre || 'Declaración'}): *${amtFormatted} €* (${tax.tipo_resultado})\n`;
+        text += `• *Modelo ${tax.modelo}* (${tax.modelo_nombre || 'Declaración'}): *${amtFormatted} €* (${nombreResultado(tax.tipo_resultado)})\n`;
       });
 
       text += `\n*RESUMEN TOTAL*:\n`;
@@ -446,6 +469,9 @@ export default function App() {
         }
         text += `• *Fecha de cargo en cuenta (AEAT)*: *${chargeDateText}*\n\n`;
         text += `⚠️ *Aviso de Domiciliación*: Por favor, compruebe que dispone de saldo de *${totalFormatted} €* en la cuenta bancaria para el día del cobro. La Agencia Tributaria realizará el cargo automáticamente.\n\n`;
+      } else if (nadaQuePagar) {
+        text += `\n✅ *No tiene que pagar nada* este periodo: ninguna de las declaraciones sale a ingresar.\n\n`;
+        text += `Los importes a su favor se descontarán en sus próximas declaraciones.\n\n`;
       } else {
         text += `• *Fecha límite de ingreso*: *${chargeDateText}*\n\n`;
         text += `⚠️ *Aviso*: Rogamos que revise los métodos de pago de cada modelo indicados en el desglose anterior para realizar los ingresos antes del *${chargeDateText}*.\n\n`;

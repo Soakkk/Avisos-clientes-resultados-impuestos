@@ -191,8 +191,9 @@ export const NoticeEditor: React.FC<NoticeEditorProps> = ({ notice, onSave, onCa
                       <option value="Domiciliación">Domiciliación</option>
                       <option value="A ingresar">A ingresar</option>
                       <option value="A compensar">A compensar</option>
+                      <option value="Resultado negativo">Negativa (no paga, se descuenta)</option>
                       <option value="Resultado cero / Sin actividad">Sin actividad</option>
-                      <option value="Devolución">Devolución</option>
+                      <option value="Devolución">Devolución (la AEAT le ingresa)</option>
                     </select>
                   </div>
                 </div>

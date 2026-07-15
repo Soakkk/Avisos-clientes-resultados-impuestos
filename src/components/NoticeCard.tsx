@@ -63,8 +63,23 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
 
   const single = notice.notices.length === 1 ? notice.notices[0] : null;
   const first = notice.notices[0];
-  const isRefund = notice.total_importe < 0;
   const totalAmount = euro(Math.abs(notice.total_importe));
+
+  // Una devolución es SOLO aquella en la que la AEAT ingresa el dinero al
+  // cliente. Que el total salga negativo no basta: un 130 negativo o un IVA a
+  // compensar también dan negativo y ahí Hacienda no devuelve nada, solo se
+  // descuenta más adelante. Antes se miraba `total_importe < 0` y a esos avisos
+  // les ponía "La Agencia Tributaria le devolverá X": un ingreso que no llegaba.
+  const isRefund = notice.notices.some((n) => n.tipo_resultado === 'Devolución');
+
+  // Resultados en los que el cliente no paga nada y el importe se arrastra a
+  // declaraciones posteriores (no lo devuelve Hacienda).
+  const SIN_PAGO = ['A compensar', 'Resultado negativo', 'Resultado cero / Sin actividad'];
+  const todosSinPago = notice.notices.length > 0 && notice.notices.every((n) => SIN_PAGO.includes(n.tipo_resultado));
+
+  // El 130/131 (pago fraccionado de IRPF) arrastra el negativo solo dentro del
+  // mismo ejercicio; el resto de modelos, a las siguientes declaraciones.
+  const esPagoFraccionado = (m: string) => m === '130' || m === '131';
 
   const chargeDate = notice.notices.length
     ? notice.notices.map((n) => new Date(n.fechaCargo)).sort((a, b) => a.getTime() - b.getTime())[0]
@@ -86,7 +101,30 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
         shortMsg: 'Se descontará en próximas declaraciones.',
         iban: false, dateLabel: '',
       };
-    if (isRefund || (single && single.tipo_resultado === 'Devolución'))
+    // Declaración negativa (lo habitual en el 130 cuando hay pocos ingresos):
+    // no se paga nada y el importe se descuenta más adelante. Ojo: NO es una
+    // devolución, la AEAT no ingresa nada.
+    if (single && single.tipo_resultado === 'Resultado negativo')
+      return {
+        label: 'Negativa', c: '#23507F', bg: '#EAF1F8', bd: '#D3E1EF', dot: '#2E5AA8',
+        msg: esPagoFraccionado(single.modelo)
+          ? `No tiene que pagar nada este trimestre. La declaración sale negativa y ese importe de ${totalAmount} se descontará en sus próximos pagos fraccionados de este mismo año.`
+          : `No tiene que pagar nada este periodo. La declaración sale negativa y ese importe de ${totalAmount} se descontará en sus próximas declaraciones.`,
+        shortMsg: esPagoFraccionado(single.modelo)
+          ? 'Se descontará en los próximos trimestres.'
+          : 'Se descontará en próximas declaraciones.',
+        iban: false, dateLabel: '',
+      };
+    // Varios impuestos y ninguno a pagar (p. ej. IVA a compensar + 130 negativo,
+    // que es lo que sale en actividades con pocos ingresos).
+    if (!single && todosSinPago)
+      return {
+        label: 'Negativa', c: '#23507F', bg: '#EAF1F8', bd: '#D3E1EF', dot: '#2E5AA8',
+        msg: `No tiene que pagar nada este periodo. Ninguna de las declaraciones sale a ingresar: los importes a su favor se descontarán en sus próximas declaraciones.`,
+        shortMsg: 'No hay nada que ingresar este periodo.',
+        iban: false, dateLabel: '',
+      };
+    if (isRefund)
       return {
         label: 'A devolver', c: '#22685A', bg: '#E7F3F0', bd: '#C9E5DE', dot: '#2C7A6B',
         msg: `La Agencia Tributaria le devolverá ${totalAmount}. El abono puede tardar unas semanas en hacerse efectivo.`,
@@ -113,9 +151,14 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
     ? shortTaxName(single.modelo, single.modelo_nombre) || `Modelo ${single.modelo}`
     : 'Resumen de impuestos';
   const periodoText = `${periodoLabel(first?.periodo || '')} ${first?.ejercicio || ''}`.trim();
-  const amountLabel = single
-    ? (notice.todosDomiciliados ? 'Importe domiciliado' : res.label === 'A compensar' ? 'Saldo a compensar' : res.label === 'A devolver' ? 'Importe a devolver' : res.label === 'Sin actividad' ? 'Importe' : 'Importe a ingresar')
-    : (notice.todosDomiciliados ? 'Total domiciliado' : isRefund ? 'Total a devolver' : 'Total a pagar');
+  const amountLabel = (() => {
+    if (notice.todosDomiciliados) return single ? 'Importe domiciliado' : 'Total domiciliado';
+    if (res.label === 'A compensar') return 'Saldo a compensar';
+    if (res.label === 'Negativa') return single ? 'Importe a descontar' : 'Total a descontar';
+    if (res.label === 'A devolver') return single ? 'Importe a devolver' : 'Total a devolver';
+    if (res.label === 'Sin actividad') return 'Importe';
+    return single ? 'Importe a ingresar' : 'Total a pagar';
+  })();
 
   const exportOpts = { pixelRatio: 2, backgroundColor: PAGE, cacheBust: true, skipFonts: true };
 
