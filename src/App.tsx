@@ -1090,7 +1090,7 @@ export default function App() {
                                   onChange={(e) => handleAdvisoryNoteChange(joint.id, true, e.target.value)}
                                   maxLength={240}
                                   rows={3}
-                                  placeholder="Ej.: Recuerde enviarnos el justificante una vez realizado el pago."
+                                  placeholder={'Ej.: Av\u00edsenos si quiere solicitar un aplazamiento.'}
                                   className="w-full resize-y rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700 focus:border-slate-400 focus:outline-none"
                                 />
                                 <div className="mt-1 text-right text-[10px] text-slate-400">

@@ -281,13 +281,9 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
     manualNote ? (
       <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', borderTop: `1px solid ${ROW}`, background: NOTE_BG, padding: '10px 20px 12px' }}>
         <Info size={13} color={NAVY} style={{ marginTop: 2, flexShrink: 0 }} />
-        <div style={{ minWidth: 0, flex: 1 }}>
-          <div style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '0.06em', color: NAVY, textTransform: 'uppercase', marginBottom: 2 }}>
-            {'Nota de la asesor\u00eda'}
-          </div>
-          <div style={{ fontSize: 11.5, color: '#5C564A', lineHeight: 1.4, whiteSpace: 'pre-wrap', overflowWrap: 'break-word' }}>
-            {manualNote}
-          </div>
+        <div style={{ minWidth: 0, flex: 1, fontSize: 11.5, color: '#5C564A', lineHeight: 1.4, whiteSpace: 'pre-wrap', overflowWrap: 'break-word' }}>
+          <span style={{ fontWeight: 700, color: NAVY }}>Nota: </span>
+          <span>{manualNote}</span>
         </div>
       </div>
     ) : null;
