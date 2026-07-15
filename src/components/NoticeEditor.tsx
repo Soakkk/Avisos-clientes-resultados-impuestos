@@ -198,6 +198,30 @@ export const NoticeEditor: React.FC<NoticeEditorProps> = ({ notice, onSave, onCa
                   </div>
                 </div>
 
+                {/* La fecha de presentación solo se enseña en los avisos que no
+                    hay que pagar, que es donde sustituye al importe. */}
+                {['A compensar', 'Resultado negativo', 'Resultado cero / Sin actividad'].includes(tax.tipo_resultado) && (
+                  <div className="mt-2">
+                    <label className="block text-[10px] font-semibold text-stone-500 mb-0.5">
+                      Fecha de presentación <span className="font-normal text-stone-400">(sale en el aviso; vacía = no se muestra)</span>
+                    </label>
+                    <input
+                      type="date"
+                      className="w-full px-2 py-1 text-xs border border-stone-300 rounded focus:outline-slate-800 bg-white"
+                      value={tax.fechaPresentacion ? tax.fechaPresentacion.slice(0, 10) : ''}
+                      onChange={(e) =>
+                        handleTaxChange(
+                          index,
+                          'fechaPresentacion',
+                          // El input da 'aaaa-mm-dd'; se guarda a mediodía para que
+                          // ningún huso horario mueva la fecha un día atrás.
+                          e.target.value ? new Date(e.target.value + 'T12:00:00').toISOString() : '',
+                        )
+                      }
+                    />
+                  </div>
+                )}
+
                 {tax.tipo_resultado === 'Domiciliación' && (
                   <div className="mt-2">
                     <label className="block text-[10px] font-semibold text-stone-500 mb-0.5">IBAN de Cargo</label>

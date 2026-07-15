@@ -31,6 +31,12 @@ export interface TaxNotice {
   screenshotId?: string; // id de la captura original guardada en disco (/api/capturas/:id)
   fechaCargo: string; // Calculated final AEAT charge/deadline
   fechaLimiteDomiciliacion: string; // Calculated direct debit cutoff
+  /**
+   * Fecha real de presentación leída de la captura ("Datos Present."), en ISO.
+   * Es un dato de la captura, no calculado: si no aparece se queda vacío y la
+   * ficha no enseña ninguna fecha, antes que darle al cliente una que no es.
+   */
+  fechaPresentacion?: string;
   timestamp: number;
   verificacion?: NoticeVerification;
 }

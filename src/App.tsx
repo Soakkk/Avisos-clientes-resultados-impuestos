@@ -98,6 +98,43 @@ const FIELD_LABELS: Record<string, string> = {
   tipo_resultado: 'Resultado',
 };
 
+// Resultados en los que el cliente no paga nada: el importe no se ingresa ni lo
+// devuelve Hacienda, se arrastra a declaraciones posteriores. Sin esto, a un 130
+// negativo se le pedía "realice el pago antes de la fecha límite".
+const SIN_PAGO = ['A compensar', 'Resultado negativo', 'Resultado cero / Sin actividad'];
+
+/**
+ * El 130/131 no tiene resultado "a compensar": eso es del IVA. Cuando el pago
+ * fraccionado sale negativo es una declaración NEGATIVA, que se deduce en los
+ * trimestres siguientes del mismo año. La IA lo leía a veces como "A compensar"
+ * y el aviso hablaba de un "saldo a su favor", que suena a dinero por cobrar.
+ */
+function normalizarResultado(modelo: unknown, tipo: unknown): TaxNotice['tipo_resultado'] {
+  const t = (tipo || 'Domiciliación') as TaxNotice['tipo_resultado'];
+  const esPagoFraccionado = modelo === '130' || modelo === '131';
+  if (esPagoFraccionado && t === 'A compensar') return 'Resultado negativo';
+  return t;
+}
+
+/**
+ * Convierte la fecha de presentación que lee la IA ("15/07/2026") a ISO.
+ * Devuelve undefined ante cualquier cosa rara: esta fecha va en el aviso del
+ * cliente, así que mejor no enseñar ninguna que enseñar una inventada.
+ */
+function parseFechaEspanola(valor: unknown): string | undefined {
+  if (typeof valor !== 'string') return undefined;
+  const m = valor.trim().match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+  if (!m) return undefined;
+  const [, d, mes, a] = m;
+  const fecha = new Date(Number(a), Number(mes) - 1, Number(d));
+  // new Date(2026, 1, 31) no falla, "corrige" la fecha al 3 de marzo: hay que
+  // comprobar que los componentes siguen siendo los mismos para colar un 31/02.
+  if (fecha.getFullYear() !== Number(a) || fecha.getMonth() !== Number(mes) - 1 || fecha.getDate() !== Number(d)) {
+    return undefined;
+  }
+  return fecha.toISOString();
+}
+
 export default function App() {
   const [rawNotices, setRawNotices] = useState<TaxNotice[]>([]);
   const [loading, setLoading] = useState(false);
@@ -276,12 +313,13 @@ export default function App() {
         cliente_nif: data.cliente_nif || 'Pendiente',
         cliente_nombre: data.cliente_nombre || 'Cliente Desconocido',
         importe: typeof data.importe === 'number' ? data.importe : parseFloat(data.importe) || 0,
-        tipo_resultado: data.tipo_resultado || 'Domiciliación',
+        tipo_resultado: normalizarResultado(data.modelo, data.tipo_resultado),
         iban: data.iban || '',
         screenshotUrl: thumbnail,
         screenshotId,
         fechaCargo: deadlines.fechaCargo.toISOString(),
         fechaLimiteDomiciliacion: deadlines.fechaLimiteDomiciliacion.toISOString(),
+        fechaPresentacion: parseFechaEspanola(data.fecha_presentacion),
         timestamp: Date.now()
       };
 
@@ -386,13 +424,8 @@ export default function App() {
 
   const groupedNotices = getGroupedNotices(rawNotices);
 
-  // Resultados en los que el cliente no paga nada: el importe no se ingresa ni
-  // lo devuelve Hacienda, se arrastra a declaraciones posteriores. Sin esto, a
-  // un 130 negativo se le pedía "realice el pago antes de la fecha límite".
-  const SIN_PAGO = ['A compensar', 'Resultado negativo', 'Resultado cero / Sin actividad'];
-
   // Cómo se nombra cada resultado de cara al cliente: "Resultado negativo" es el
-  // valor interno, pero en el aviso queda mejor "Negativa" (igual que en la ficha).
+  // valor interno, pero en el aviso queda mejor "Negativa".
   const RESULTADO_CLIENTE: Record<string, string> = {
     'Resultado negativo': 'Negativa',
     'Resultado cero / Sin actividad': 'Sin actividad',

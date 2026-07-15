@@ -77,74 +77,66 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
   const SIN_PAGO = ['A compensar', 'Resultado negativo', 'Resultado cero / Sin actividad'];
   const todosSinPago = notice.notices.length > 0 && notice.notices.every((n) => SIN_PAGO.includes(n.tipo_resultado));
 
-  // El 130/131 (pago fraccionado de IRPF) arrastra el negativo solo dentro del
-  // mismo ejercicio; el resto de modelos, a las siguientes declaraciones.
-  const esPagoFraccionado = (m: string) => m === '130' || m === '131';
-
   const chargeDate = notice.notices.length
     ? notice.notices.map((n) => new Date(n.fechaCargo)).sort((a, b) => a.getTime() - b.getTime())[0]
     : null;
 
+  // Fecha real de presentación, la que aparece en la captura ("Datos Present.").
+  // Si no se pudo leer no se inventa ninguna: la ficha se queda sin esa línea
+  // antes que decirle al cliente una fecha que no es.
+  const presentDate = (() => {
+    const fechas = notice.notices
+      .map((n) => n.fechaPresentacion)
+      .filter((f): f is string => !!f)
+      .map((f) => new Date(f))
+      .filter((d) => !isNaN(d.getTime()));
+    return fechas.length ? fechas.sort((a, b) => b.getTime() - a.getTime())[0] : null;
+  })();
+
   const res = (() => {
-    const dateTxt = chargeDate ? dateShort(chargeDate) : '';
     if (notice.todosDomiciliados)
       return {
         label: 'Domiciliado', c: '#23603B', bg: '#EAF3EC', bd: '#CFE5D5', dot: '#2E6B43',
-        msg: `No tiene que hacer nada. La Agencia Tributaria cargará ${totalAmount} en su cuenta el ${dateTxt}. Asegúrese de tener saldo suficiente ese día.`,
         shortMsg: 'Se cargará automáticamente en su cuenta.',
-        iban: true, dateLabel: 'Fecha de cargo',
-      };
-    if (single && single.tipo_resultado === 'A compensar')
-      return {
-        label: 'A compensar', c: '#23507F', bg: '#EAF1F8', bd: '#D3E1EF', dot: '#2E5AA8',
-        msg: `No tiene que pagar nada este periodo. El saldo a su favor de ${totalAmount} se descontará automáticamente en sus próximas declaraciones.`,
-        shortMsg: 'Se descontará en próximas declaraciones.',
-        iban: false, dateLabel: '',
-      };
-    // Declaración negativa (lo habitual en el 130 cuando hay pocos ingresos):
-    // no se paga nada y el importe se descuenta más adelante. Ojo: NO es una
-    // devolución, la AEAT no ingresa nada.
-    if (single && single.tipo_resultado === 'Resultado negativo')
-      return {
-        label: 'Negativa', c: '#23507F', bg: '#EAF1F8', bd: '#D3E1EF', dot: '#2E5AA8',
-        msg: esPagoFraccionado(single.modelo)
-          ? `No tiene que pagar nada este trimestre. La declaración sale negativa y ese importe de ${totalAmount} se descontará en sus próximos pagos fraccionados de este mismo año.`
-          : `No tiene que pagar nada este periodo. La declaración sale negativa y ese importe de ${totalAmount} se descontará en sus próximas declaraciones.`,
-        shortMsg: esPagoFraccionado(single.modelo)
-          ? 'Se descontará en los próximos trimestres.'
-          : 'Se descontará en próximas declaraciones.',
-        iban: false, dateLabel: '',
-      };
-    // Varios impuestos y ninguno a pagar (p. ej. IVA a compensar + 130 negativo,
-    // que es lo que sale en actividades con pocos ingresos).
-    if (!single && todosSinPago)
-      return {
-        label: 'Negativa', c: '#23507F', bg: '#EAF1F8', bd: '#D3E1EF', dot: '#2E5AA8',
-        msg: `No tiene que pagar nada este periodo. Ninguna de las declaraciones sale a ingresar: los importes a su favor se descontarán en sus próximas declaraciones.`,
-        shortMsg: 'No hay nada que ingresar este periodo.',
-        iban: false, dateLabel: '',
+        iban: true, dateLabel: 'Fecha de cargo', sinImporte: false,
       };
     if (isRefund)
       return {
         label: 'A devolver', c: '#22685A', bg: '#E7F3F0', bd: '#C9E5DE', dot: '#2C7A6B',
-        msg: `La Agencia Tributaria le devolverá ${totalAmount}. El abono puede tardar unas semanas en hacerse efectivo.`,
         shortMsg: 'Hacienda le devolverá el importe.',
-        iban: true, dateLabel: '',
+        iban: true, dateLabel: '', sinImporte: false,
       };
     if (single && single.tipo_resultado === 'Resultado cero / Sin actividad')
       return {
         label: 'Sin actividad', c: '#5C564A', bg: '#F0ECE3', bd: '#E0D8C9', dot: '#6B6456',
-        msg: 'Declaración presentada sin importe a pagar ni a devolver. No tiene que hacer nada.',
         shortMsg: 'Presentada sin importe.',
-        iban: false, dateLabel: '',
+        iban: false, dateLabel: '', sinImporte: false,
+      };
+    // Declaración presentada que no hay que pagar: el 130 negativo por pocos
+    // ingresos, el IVA a compensar, o varios impuestos sin nada que ingresar.
+    //
+    // Aquí la ficha NO enseña ningún importe (sinImporte). El importe salía en
+    // grande y el cliente entendía que iba a cobrar ese dinero, cuando la AEAT
+    // no le ingresa nada. Solo se le dice lo que necesita saber: que está
+    // presentada y que no tiene que pagar.
+    if (todosSinPago)
+      return {
+        label: 'Presentada', c: '#23507F', bg: '#EAF1F8', bd: '#D3E1EF', dot: '#2E5AA8',
+        shortMsg: 'No tiene que pagar nada.',
+        iban: false,
+        dateLabel: presentDate ? 'Fecha de presentación' : '',
+        sinImporte: true,
       };
     return {
       label: 'A pagar', c: '#8A5A12', bg: '#FBF1E0', bd: '#EFDEBE', dot: '#B4761E',
-      msg: `Debe realizar el ingreso de ${totalAmount} antes del ${dateTxt} para evitar recargos de la Agencia Tributaria.`,
       shortMsg: 'Recuerde ingresarlo antes de la fecha límite.',
-      iban: false, dateLabel: 'Fecha límite',
+      iban: false, dateLabel: 'Fecha límite', sinImporte: false,
     };
   })();
+
+  // La única fecha que se enseña: la de presentación en los avisos ya
+  // presentados sin pago, y la de cargo/límite en el resto.
+  const fechaMostrada = res.dateLabel === 'Fecha de presentación' ? presentDate : chargeDate;
 
   const chip = single ? `Modelo ${single.modelo}` : `${notice.notices.length} impuestos`;
   const taxBig = single
@@ -153,8 +145,6 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
   const periodoText = `${periodoLabel(first?.periodo || '')} ${first?.ejercicio || ''}`.trim();
   const amountLabel = (() => {
     if (notice.todosDomiciliados) return single ? 'Importe domiciliado' : 'Total domiciliado';
-    if (res.label === 'A compensar') return 'Saldo a compensar';
-    if (res.label === 'Negativa') return single ? 'Importe a descontar' : 'Total a descontar';
     if (res.label === 'A devolver') return single ? 'Importe a devolver' : 'Total a devolver';
     if (res.label === 'Sin actividad') return 'Importe';
     return single ? 'Importe a ingresar' : 'Total a pagar';
@@ -243,7 +233,11 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
               <span style={{ fontWeight: 700 }}>Modelo {tax.modelo}</span>
               {nombre && <span style={{ color: LABEL }}> · {nombre}</span>}
             </span>
-            <span style={{ fontFamily: SERIF, whiteSpace: 'nowrap', flexShrink: 0 }}>{euro(tax.importe)}</span>
+            {/* Sin importes cuando no hay nada que pagar: el desglose queda como
+                la lista de las declaraciones presentadas, que es lo que interesa. */}
+            {!res.sinImporte && (
+              <span style={{ fontFamily: SERIF, whiteSpace: 'nowrap', flexShrink: 0 }}>{euro(tax.importe)}</span>
+            )}
           </div>
         );
       })}
@@ -259,13 +253,13 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
     ) : null;
 
   const FechaRow = () =>
-    res.dateLabel && chargeDate ? (
+    res.dateLabel && fechaMostrada ? (
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, padding: '7px 0', borderTop: `1px solid ${ROW}`, flexWrap: 'wrap' }}>
         <span style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12.5, color: LABEL, whiteSpace: 'nowrap' }}>
           <Calendar size={15} color={NAVY} style={{ flexShrink: 0 }} />
           {res.dateLabel}
         </span>
-        <span style={{ fontFamily: SERIF, fontSize: 13.5, color: INK, whiteSpace: 'nowrap' }}>{formatDateSpanish(chargeDate)}</span>
+        <span style={{ fontFamily: SERIF, fontSize: 13.5, color: INK, whiteSpace: 'nowrap' }}>{formatDateSpanish(fechaMostrada)}</span>
       </div>
     ) : null;
 
@@ -303,7 +297,9 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
           </div>
           <div style={{ fontSize: 12.5, color: res.c, marginTop: 3, lineHeight: 1.4 }}>{res.shortMsg}</div>
         </div>
-        <div style={{ fontFamily: SERIF, fontSize: fitAmount(26), color: res.c, whiteSpace: 'nowrap', flexShrink: 0 }}>{totalAmount}</div>
+        {!res.sinImporte && (
+          <div style={{ fontFamily: SERIF, fontSize: fitAmount(26), color: res.c, whiteSpace: 'nowrap', flexShrink: 0 }}>{totalAmount}</div>
+        )}
       </div>
       {!single && <Desglose />}
       <CuentaRow />
@@ -315,11 +311,13 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
   const BodyB = () => (
     <>
       {!single && <div style={{ marginTop: 12 }}><Desglose /></div>}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, padding: '10px 0', borderTop: `2px solid ${NAVY}`, marginTop: single ? 12 : 5 }}>
-        <span style={{ fontSize: 13, fontWeight: 700, color: NAVY, letterSpacing: single ? 0 : '0.04em', whiteSpace: 'nowrap' }}>{single ? amountLabel : 'TOTAL'}</span>
-        <span style={{ fontFamily: SERIF, fontSize: fitAmount(25), color: NAVY, whiteSpace: 'nowrap', flexShrink: 0 }}>{totalAmount}</span>
-      </div>
-      <div style={{ margin: '8px 0 2px' }}><StatusLine /></div>
+      {!res.sinImporte && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, padding: '10px 0', borderTop: `2px solid ${NAVY}`, marginTop: single ? 12 : 5 }}>
+          <span style={{ fontSize: 13, fontWeight: 700, color: NAVY, letterSpacing: single ? 0 : '0.04em', whiteSpace: 'nowrap' }}>{single ? amountLabel : 'TOTAL'}</span>
+          <span style={{ fontFamily: SERIF, fontSize: fitAmount(25), color: NAVY, whiteSpace: 'nowrap', flexShrink: 0 }}>{totalAmount}</span>
+        </div>
+      )}
+      <div style={{ margin: res.sinImporte ? '12px 0 2px' : '8px 0 2px' }}><StatusLine /></div>
       <CuentaRow />
       <FechaRow />
       <Nota />
@@ -329,12 +327,21 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
   const BodyC = () => (
     <>
       <div style={{ textAlign: 'center', padding: '14px 0 10px' }}>
-        <div style={{ fontSize: 12, color: LABEL, letterSpacing: '0.04em' }}>{amountLabel}</div>
-        <div style={{ fontFamily: SERIF, fontSize: fitAmount(36), color: NAVY, lineHeight: 1.05, margin: '5px 0 9px', whiteSpace: 'nowrap' }}>{totalAmount}</div>
+        {!res.sinImporte && (
+          <>
+            <div style={{ fontSize: 12, color: LABEL, letterSpacing: '0.04em' }}>{amountLabel}</div>
+            <div style={{ fontFamily: SERIF, fontSize: fitAmount(36), color: NAVY, lineHeight: 1.05, margin: '5px 0 9px', whiteSpace: 'nowrap' }}>{totalAmount}</div>
+          </>
+        )}
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, color: res.c, fontSize: 14, fontWeight: 700, background: res.bg, border: `1px solid ${res.bd}`, padding: '4px 12px', borderRadius: 999, whiteSpace: 'nowrap' }}>
           <span style={{ width: 8, height: 8, borderRadius: '50%', background: res.dot, flexShrink: 0 }} />
           {res.label}
         </span>
+        {/* Sin la cifra en grande, el formato "una ojeada" se queda vacío: la
+            frase pasa a ser lo que se lee de un vistazo. */}
+        {res.sinImporte && (
+          <div style={{ fontSize: 13.5, color: res.c, marginTop: 9, lineHeight: 1.4 }}>{res.shortMsg}</div>
+        )}
       </div>
       {!single && (
         <div style={{ fontSize: 12.5, color: '#6B6456', padding: '10px 0', borderTop: `1px solid ${ROW}`, textAlign: 'center', lineHeight: 1.7 }}>
@@ -349,7 +356,8 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
                 {i > 0 && <span style={{ color: '#D6CFC0' }}>{'  |  '}</span>}
                 <span style={{ whiteSpace: 'nowrap' }}>
                   <span style={{ fontWeight: 700, color: INK }}>{tax.modelo}</span>
-                  {nombre ? ` ${nombre}` : ''} · {euro(tax.importe).replace(' €', '')}
+                  {nombre ? ` ${nombre}` : ''}
+                  {!res.sinImporte && ` · ${euro(tax.importe).replace(' €', '')}`}
                 </span>
               </React.Fragment>
             );
@@ -358,12 +366,16 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
       )}
       {(res.dateLabel || (res.iban && notice.iban)) && (
         <div style={{ marginTop: 12, paddingTop: 12, borderTop: single ? `1px solid ${ROW}` : 'none', textAlign: 'center' }}>
-          {res.dateLabel && chargeDate && (
+          {res.dateLabel && fechaMostrada && (
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
               <Calendar size={15} color={NAVY} style={{ flexShrink: 0 }} />
               <span style={{ fontSize: 13, color: INK, whiteSpace: 'nowrap' }}>
-                {res.dateLabel === 'Fecha límite' ? 'Ingresar antes del ' : 'Cargo el '}
-                <span style={{ fontFamily: SERIF }}>{dateShort(chargeDate)}</span>
+                {res.dateLabel === 'Fecha límite'
+                  ? 'Ingresar antes del '
+                  : res.dateLabel === 'Fecha de presentación'
+                    ? 'Presentada el '
+                    : 'Cargo el '}
+                <span style={{ fontFamily: SERIF }}>{dateShort(fechaMostrada)}</span>
               </span>
             </div>
           )}

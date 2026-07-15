@@ -298,6 +298,11 @@ const TAX_SCHEMA = {
     iban: {
       type: Type.STRING,
       description: "Código IBAN completo sin espacios si se muestra en el formulario de pago, p. ej. 'ES2900811016100006298239'. Si no hay o es parcial, ponlo también."
+    },
+    fecha_presentacion: {
+      type: Type.STRING,
+      description: "Fecha en la que se presentó la declaración, SOLO si aparece en la captura: suele estar junto al estado 'PRESENTADA' o el CSV, en un recuadro tipo 'Datos Present. Fecha: 15/07/2026'. " +
+        "Formato dd/mm/aaaa. NO la confundas con la fecha de cargo, la fecha límite, el periodo ni el ejercicio, y NO la deduzcas ni la inventes: si no se ve una fecha de presentación en la captura, devuelve cadena vacía."
     }
   },
   required: ["modelo", "periodo", "ejercicio", "cliente_nif", "cliente_nombre", "importe", "tipo_resultado"]
