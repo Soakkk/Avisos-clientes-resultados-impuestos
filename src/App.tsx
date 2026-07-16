@@ -5,6 +5,7 @@ import { LoaderOverlay } from './components/LoaderOverlay';
 import { NoticeEditor } from './components/NoticeEditor';
 import { NoticeCard, CardFormat } from './components/NoticeCard';
 import { ApiKeySettings } from './components/ApiKeySettings';
+import appIcon from './assets/app-icon.png';
 import { 
   Clipboard, 
   Upload, 
@@ -710,7 +711,7 @@ export default function App() {
           className="h-11 flex-none bg-[#0B3159] text-white flex items-center gap-2 px-4 pr-40 select-none"
           style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
         >
-          <Clipboard className="w-4 h-4" />
+          <img src={appIcon} alt="" className="w-7 h-7 object-contain" />
           <span className="text-sm font-semibold">Generador de Avisos Fiscales</span>
         </div>
 
