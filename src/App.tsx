@@ -803,40 +803,39 @@ export default function App() {
 
         <input id="workspace-file-input" type="file" accept="image/*" className="hidden" onChange={handleFileInputChange} />
 
-        <div className="flex-none bg-white border-b border-stone-200 px-5 py-2.5">
-          <div className="flex items-center gap-5">
-            <div className="flex items-center gap-3 flex-1">
-              <span className={'w-9 h-9 rounded-full flex items-center justify-center font-bold border ' + (selectedJoint ? 'bg-emerald-50 border-emerald-500 text-emerald-700' : 'bg-stone-50 border-stone-300 text-stone-500')}>
-                {selectedJoint ? <Check className="w-5 h-5" /> : '1'}
-              </span>
-              <div>
-                <div className="text-sm font-semibold">Pegar captura</div>
-                <div className="text-[10px] text-stone-400">Origen del aviso</div>
+        <div className="flex-none bg-white border-b border-stone-200 px-5 py-2">
+          <div className="mx-auto flex max-w-[1760px] items-center gap-3">
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-sm font-bold text-[#102A4C]">
+                {selectedJoint ? selectedJoint.cliente_nombre : 'Nuevo aviso fiscal'}
               </div>
-              <div className="h-px bg-stone-200 flex-1 ml-3" />
-            </div>
-
-            <div className="flex items-center gap-3 flex-1">
-              <span className="w-9 h-9 rounded-full flex items-center justify-center font-bold bg-[#0B3159] text-white">2</span>
-              <div>
-                <div className="text-sm font-bold text-[#0B3159]">Revisar datos</div>
-                <div className="text-[10px] text-stone-400">Comprobar y corregir</div>
-              </div>
-              <div className="h-px bg-stone-200 flex-1 ml-3" />
-            </div>
-
-            <div className="flex items-center gap-3 flex-1">
-              <span className="w-9 h-9 rounded-full flex items-center justify-center font-bold border border-stone-300 text-stone-500">3</span>
-              <div>
-                <div className="text-sm font-semibold">Copiar y enviar</div>
-                <div className="text-[10px] text-stone-400">WhatsApp</div>
+              <div className="text-[10px] text-stone-400">
+                {selectedJoint
+                  ? `${selectedJoint.notices.length} ${selectedJoint.notices.length === 1 ? 'impuesto' : 'impuestos'} · ${selectedVerificationState === 'ok' ? 'datos verificados' : 'pendiente de revisión'}`
+                  : 'Pegue una captura para comenzar'}
               </div>
             </div>
-
-            <button onClick={handleReadClipboard} className="ml-auto flex items-center gap-2 rounded-lg bg-[#0B3159] px-5 py-3 text-sm font-bold text-white hover:bg-[#082745]">
+            {selectedJoint && (
+              <>
+                <button
+                  onClick={() => copyWhatsAppText(selectedJoint)}
+                  className="flex items-center gap-1.5 rounded-lg border border-stone-300 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-stone-50"
+                >
+                  {copiedTextId === selectedJoint.id ? <Check className="h-4 w-4 text-emerald-600" /> : <Copy className="h-4 w-4" />}
+                  {copiedTextId === selectedJoint.id ? 'Texto copiado' : 'Copiar texto'}
+                </button>
+                <button
+                  onClick={() => setActiveTab((prev) => ({ ...prev, [selectedJoint.id]: 'image' }))}
+                  className="flex items-center gap-1.5 rounded-lg border border-stone-300 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-stone-50"
+                >
+                  <ImageIcon className="h-4 w-4" /> Ver imagen
+                </button>
+              </>
+            )}
+            <button onClick={handleReadClipboard} className="flex items-center gap-2 rounded-lg bg-[#0B3159] px-4 py-2 text-xs font-bold text-white hover:bg-[#082745]">
               <Clipboard className="w-4 h-4" />
-              Pegar otra captura
-              <kbd className="ml-1 rounded bg-white/10 px-1.5 py-0.5 text-[10px] font-normal">Ctrl+V</kbd>
+              Pegar captura
+              <kbd className="ml-1 rounded bg-white/10 px-1.5 py-0.5 text-[9px] font-normal">Ctrl+V</kbd>
             </button>
           </div>
         </div>
