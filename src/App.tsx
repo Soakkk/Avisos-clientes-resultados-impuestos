@@ -118,7 +118,7 @@ const ADVISORY_NOTE_PRESETS = [
   {
     id: 'aplazamiento',
     label: 'Aplazamiento',
-    text: 'Av?senos si desea solicitar un aplazamiento.',
+    text: 'Avísenos si desea solicitar un aplazamiento.',
     icon: Landmark,
   },
   {
@@ -129,8 +129,8 @@ const ADVISORY_NOTE_PRESETS = [
   },
   {
     id: 'domiciliacion',
-    label: 'Confirmar domiciliaci?n',
-    text: 'Pendiente de confirmar la domiciliaci?n.',
+    label: 'Confirmar domiciliación',
+    text: 'Pendiente de confirmar la domiciliación.',
     icon: CalendarClock,
   },
 ] as const;
@@ -207,16 +207,28 @@ export default function App() {
     if (savedNotices) {
       try {
         const parsed: TaxNotice[] = JSON.parse(savedNotices);
-        setRawNotices(parsed);
+        // Migra avisos antiguos con tildes dañadas y refresca las fechas con
+        // las reglas actuales.
+        const normalized = parsed.map((notice) => {
+          const deadlines = calculateAEATDeadlines(notice.modelo, notice.periodo, notice.ejercicio);
+          return {
+            ...notice,
+            tipo_resultado: normalizeTaxResult(notice.modelo, notice.tipo_resultado),
+            fechaCargo: deadlines.fechaCargo.toISOString(),
+            fechaLimiteDomiciliacion: deadlines.fechaLimiteDomiciliacion.toISOString(),
+          };
+        });
+        setRawNotices(normalized);
+        localStorage.setItem('aeat_raw_notices', JSON.stringify(normalized));
 
         // Migración suave: avisos guardados por versiones anteriores llevan la
         // captura completa en base64 dentro de localStorage. Se re-comprimen a
         // miniatura para liberar espacio (la original de esos avisos ya no existe
         // en disco, pero la miniatura sigue siendo perfectamente legible).
-        const oversized = parsed.filter((n) => (n.screenshotUrl?.length || 0) > 150_000);
+        const oversized = normalized.filter((n) => (n.screenshotUrl?.length || 0) > 150_000);
         if (oversized.length > 0) {
           Promise.all(
-            parsed.map(async (n) =>
+            normalized.map(async (n) =>
               (n.screenshotUrl?.length || 0) > 150_000
                 ? { ...n, screenshotUrl: await compressToThumbnail(n.screenshotUrl!) }
                 : n

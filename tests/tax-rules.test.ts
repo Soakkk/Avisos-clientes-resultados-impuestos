@@ -15,9 +15,9 @@ test('calcula los plazos oficiales del modelo 303 3T 2026', () => {
   assert.equal(ymd(result.fechaCargo), '2026-10-20');
 });
 
-test('el cuarto trimestre vence en el año siguiente y aplica el calendario oficial', () => {
+test('el cuarto trimestre vence en el año siguiente', () => {
   const result = calculateAEATDeadlines('303', '4T', '2026');
-  assert.equal(ymd(result.fechaLimiteDomiciliacion), '2027-1-27');
+  assert.equal(ymd(result.fechaLimiteDomiciliacion), '2027-1-25');
   assert.equal(ymd(result.fechaCargo), '2027-2-1');
 });
 

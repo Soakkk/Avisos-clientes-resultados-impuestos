@@ -437,6 +437,8 @@ function normalizarCampo(campo: string, valor: any): string {
     }
     case "importe":
       return (Math.round((parseFloat(s) || 0) * 100) / 100).toFixed(2);
+    case "tipo_resultado":
+      return s.normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/\?/g, "").trim().toLowerCase();
     default:
       return s.trim();
   }

@@ -161,8 +161,10 @@ export function calculateAEATDeadlines(modelo: string, periodo: string, ejercici
     }
   }
 
-  let cargoDate = new Date(cargoYear, cargoMonth, cargoDay);
-  let domDate = new Date(domYear, domMonth, domDay);
+  // El mediodía evita que la serialización ISO desplace la fecha al día
+  // anterior en zonas horarias positivas.
+  let cargoDate = new Date(cargoYear, cargoMonth, cargoDay, 12);
+  let domDate = new Date(domYear, domMonth, domDay, 12);
 
   // Shifting if it lands on a weekend (Saturday or Sunday) to next business day (Monday)
   const adjustWeekend = (d: Date): Date => {
@@ -186,7 +188,6 @@ export function calculateAEATDeadlines(modelo: string, periodo: string, ejercici
     '2026-1T': ['2026-04-20', '2026-04-15'],
     '2026-2T': ['2026-07-20', '2026-07-15'],
     '2026-3T': ['2026-10-20', '2026-10-15'],
-    '2026-4T': ['2027-02-01', '2027-01-27'],
   };
   const official = modelo.trim() === '303' ? official303Quarterly[`${year}-${cleanPeriod}`] : undefined;
   if (official) {

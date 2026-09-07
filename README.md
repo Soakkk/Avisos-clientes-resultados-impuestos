@@ -68,4 +68,4 @@ npm run electron:publish
 ```
 
 Los instaladores se publican en
-[Generador-Avisos-Fiscales-releases](https://github.com/Soakkk/Generador-Avisos-Fiscales-releases).
+[Avisos-clientes-resultados-impuestos-releases](https://github.com/Soakkk/Avisos-clientes-resultados-impuestos-releases).

@@ -25,6 +25,8 @@ jobs:
         run: npm ci
       - name: Comprobar TypeScript
         run: npm run lint
+      - name: Probar reglas fiscales
+        run: npm test
       - name: Compilar aplicación web
         run: npm run build
 
