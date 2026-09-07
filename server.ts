@@ -313,7 +313,7 @@ const TAX_SCHEMA = {
     },
     tipo_resultado: {
       type: Type.STRING,
-      enum: ['Domiciliaci?n', 'A ingresar', 'A compensar', 'Resultado negativo', 'Resultado cero / Sin actividad', 'Devoluci?n'],
+      enum: ['Domiciliación', 'A ingresar', 'A compensar', 'Resultado negativo', 'Resultado cero / Sin actividad', 'Devolución'],
       description: "Tipo de resultado. Debe ser exactamente uno de estos valores: 'Domiciliación', 'A ingresar', 'A compensar', 'Resultado negativo', 'Resultado cero / Sin actividad', 'Devolución'. " +
         "Usa 'Resultado negativo' cuando el resultado de la declaración sea NEGATIVO y la AEAT no devuelva nada, sino que ese importe se descuente en declaraciones posteriores: " +
         "es el caso típico del modelo 130/131 con resultado negativo (aparece marcado como 'Negativa' o 'A deducir', y se arrastra a la casilla 'A deducir trimestres anteriores' del ejercicio). " +

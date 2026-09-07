@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { TaxNotice, JointNotice, NoticeVerification, calculateAEATDeadlines, formatDateSpanish } from './types';
+import { TaxNotice, JointNotice, NoticeVerification, calculateAEATDeadlines, formatDateSpanish, normalizeTaxResult } from './types';
 import { verifyNoticeFields, normalizeNifKey } from './validation';
 import { LoaderOverlay } from './components/LoaderOverlay';
 import { NoticeEditor } from './components/NoticeEditor';
@@ -142,10 +142,7 @@ const ADVISORY_NOTE_PRESETS = [
  * y el aviso hablaba de un "saldo a su favor", que suena a dinero por cobrar.
  */
 function normalizarResultado(modelo: unknown, tipo: unknown): TaxNotice['tipo_resultado'] {
-  const t = (tipo || 'Domiciliación') as TaxNotice['tipo_resultado'];
-  const esPagoFraccionado = modelo === '130' || modelo === '131';
-  if (esPagoFraccionado && t === 'A compensar') return 'Resultado negativo';
-  return t;
+  return normalizeTaxResult(modelo, tipo);
 }
 
 /**

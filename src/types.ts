@@ -57,6 +57,43 @@ export interface JointNotice {
   mostrarNotaAsesoria?: boolean;
 }
 
+export const TAX_RESULT_TYPES = [
+  'Domiciliación',
+  'A ingresar',
+  'A compensar',
+  'Resultado negativo',
+  'Resultado cero / Sin actividad',
+  'Devolución',
+] as const;
+
+/**
+ * Normaliza variantes devueltas por OCR/IA y textos antiguos guardados con
+ * problemas de codificación. Así una domiciliación nunca cae por error en el
+ * aviso genérico "A pagar".
+ */
+export function normalizeTaxResult(modelo: unknown, value: unknown): TaxNotice['tipo_resultado'] {
+  const raw = String(value ?? '').trim();
+  const key = raw
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\?/g, '')
+    .toLowerCase();
+
+  let result: TaxNotice['tipo_resultado'];
+  if (/domicilia/.test(key)) result = 'Domiciliación';
+  else if (/devolu/.test(key)) result = 'Devolución';
+  else if (/compens/.test(key)) result = 'A compensar';
+  else if (/sin actividad|resultado cero|^cero$/.test(key)) result = 'Resultado cero / Sin actividad';
+  else if (/negativ/.test(key)) result = 'Resultado negativo';
+  else result = 'A ingresar';
+
+  const model = String(modelo ?? '').trim();
+  if ((model === '130' || model === '131') && result === 'A compensar') {
+    return 'Resultado negativo';
+  }
+  return result;
+}
+
 // Function to calculate AEAT Spanish Tax Deadlines and Direct Debit Cutoffs
 export function calculateAEATDeadlines(modelo: string, periodo: string, ejercicio: string): { 
   fechaCargo: Date; 
@@ -124,8 +161,8 @@ export function calculateAEATDeadlines(modelo: string, periodo: string, ejercici
     }
   }
 
-  const cargoDate = new Date(cargoYear, cargoMonth, cargoDay);
-  const domDate = new Date(domYear, domMonth, domDay);
+  let cargoDate = new Date(cargoYear, cargoMonth, cargoDay);
+  let domDate = new Date(domYear, domMonth, domDay);
 
   // Shifting if it lands on a weekend (Saturday or Sunday) to next business day (Monday)
   const adjustWeekend = (d: Date): Date => {
@@ -139,10 +176,29 @@ export function calculateAEATDeadlines(modelo: string, periodo: string, ejercici
     return res;
   };
 
-  return {
-    fechaCargo: adjustWeekend(cargoDate),
-    fechaLimiteDomiciliacion: adjustWeekend(domDate)
+  cargoDate = adjustWeekend(cargoDate);
+  domDate = adjustWeekend(domDate);
+
+  // Fechas publicadas por la AEAT que prevalecen sobre la regla general. La
+  // fórmula anterior mantiene el cálculo automático para cualquier ejercicio;
+  // esta tabla permite reflejar ampliaciones oficiales por días inhábiles.
+  const official303Quarterly: Record<string, [string, string]> = {
+    '2026-1T': ['2026-04-20', '2026-04-15'],
+    '2026-2T': ['2026-07-20', '2026-07-15'],
+    '2026-3T': ['2026-10-20', '2026-10-15'],
+    '2026-4T': ['2027-02-01', '2027-01-27'],
   };
+  const official = modelo.trim() === '303' ? official303Quarterly[`${year}-${cleanPeriod}`] : undefined;
+  if (official) {
+    const localDate = (iso: string) => {
+      const [y, m, d] = iso.split('-').map(Number);
+      return new Date(y, m - 1, d, 12);
+    };
+    cargoDate = localDate(official[0]);
+    domDate = localDate(official[1]);
+  }
+
+  return { fechaCargo: cargoDate, fechaLimiteDomiciliacion: domDate };
 }
 
 export function formatDateSpanish(date: Date): string {

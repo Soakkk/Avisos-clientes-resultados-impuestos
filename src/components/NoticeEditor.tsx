@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { TaxNotice, JointNotice } from '../types';
+import { TaxNotice, JointNotice, calculateAEATDeadlines, normalizeTaxResult } from '../types';
 import { Save, Trash2, Plus, X } from 'lucide-react';
 
 interface NoticeEditorProps {
@@ -15,10 +15,19 @@ export const NoticeEditor: React.FC<NoticeEditorProps> = ({ notice, onSave, onCa
 
   const handleTaxChange = (index: number, field: keyof TaxNotice, value: any) => {
     const updatedTaxes = [...taxes];
-    updatedTaxes[index] = {
+    let updatedTax = {
       ...updatedTaxes[index],
       [field]: value,
     };
+    if (field === 'tipo_resultado') {
+      updatedTax.tipo_resultado = normalizeTaxResult(updatedTax.modelo, value);
+    }
+    if (field === 'modelo' || field === 'periodo' || field === 'ejercicio') {
+      const dates = calculateAEATDeadlines(updatedTax.modelo, updatedTax.periodo, updatedTax.ejercicio);
+      updatedTax.fechaCargo = dates.fechaCargo.toISOString();
+      updatedTax.fechaLimiteDomiciliacion = dates.fechaLimiteDomiciliacion.toISOString();
+    }
+    updatedTaxes[index] = updatedTax;
     setTaxes(updatedTaxes);
   };
 
@@ -28,19 +37,23 @@ export const NoticeEditor: React.FC<NoticeEditorProps> = ({ notice, onSave, onCa
   };
 
   const handleAddTax = () => {
+    const now = new Date();
+    const currentQuarter = `${Math.floor(now.getMonth() / 3) + 1}T`;
+    const exercise = now.getFullYear().toString();
+    const dates = calculateAEATDeadlines('303', currentQuarter, exercise);
     const newTax: TaxNotice = {
       id: Math.random().toString(36).substr(2, 9),
       modelo: '303',
       modelo_nombre: 'Impuesto sobre el Valor Añadido',
-      periodo: '2T',
-      ejercicio: new Date().getFullYear().toString(),
+      periodo: currentQuarter,
+      ejercicio: exercise,
       cliente_nif: clientNif,
       cliente_nombre: clientName,
       importe: 0,
       tipo_resultado: 'Domiciliación',
       iban: taxes[0]?.iban || '',
-      fechaCargo: new Date().toISOString(),
-      fechaLimiteDomiciliacion: new Date().toISOString(),
+      fechaCargo: dates.fechaCargo.toISOString(),
+      fechaLimiteDomiciliacion: dates.fechaLimiteDomiciliacion.toISOString(),
       timestamp: Date.now(),
     };
     setTaxes([...taxes, newTax]);

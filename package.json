@@ -12,6 +12,7 @@
     "start": "node dist/server.cjs",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
+    "test": "tsx --test tests/**/*.test.ts",
     "electron:dev": "electron .",
     "electron:build": "npm run build && electron-builder build --win --publish never",
     "electron:publish": "npm run build && electron-builder build --win --publish always"
