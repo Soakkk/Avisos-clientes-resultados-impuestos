@@ -5,6 +5,7 @@ const { autoUpdater } = require('electron-updater');
 
 let mainWindow;
 let expressAppProcess;
+let updateTimer;
 
 // Function to check if the local server is up and running
 function checkServerReady(url, callback) {
@@ -103,6 +104,8 @@ function createWindow() {
 // descargar, barra de progreso, e instalar en silencio (reabre la app sola).
 autoUpdater.autoDownload = false;
 autoUpdater.autoInstallOnAppQuit = false;
+autoUpdater.allowPrerelease = false;
+autoUpdater.allowDowngrade = false;
 
 function comprobarActualizaciones() {
   if (!app.isPackaged) return; // solo tiene sentido en el .exe instalado
@@ -154,7 +157,11 @@ app.whenReady().then(() => {
 
   // Create Electron Window
   createWindow();
-  comprobarActualizaciones();
+  // Esperar a que la ventana esté lista evita que el diálogo de actualización
+  // aparezca antes que la propia aplicación. Después se vuelve a comprobar de
+  // forma silenciosa cada seis horas mientras permanezca abierta.
+  setTimeout(comprobarActualizaciones, 5000);
+  updateTimer = setInterval(comprobarActualizaciones, 6 * 60 * 60 * 1000);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -164,6 +171,7 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
+  if (updateTimer) clearInterval(updateTimer);
   if (process.platform !== 'darwin') {
     app.quit();
   }

@@ -67,5 +67,8 @@ GitHub Releases (auto-actualización vía `electron-updater`):
 npm run electron:publish
 ```
 
-Los instaladores se publican en
-[Avisos-clientes-resultados-impuestos-releases](https://github.com/Soakkk/Avisos-clientes-resultados-impuestos-releases).
+Los instaladores y el archivo `latest.yml` se publican en las
+[releases del repositorio principal](https://github.com/Soakkk/Avisos-clientes-resultados-impuestos/releases).
+La aplicación busca allí una versión más reciente al arrancar y vuelve a
+comprobarlo cada seis horas. El repositorio separado de releases se conserva
+solo como histórico de las versiones antiguas.
