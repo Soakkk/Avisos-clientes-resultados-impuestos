@@ -193,6 +193,7 @@ export default function App() {
   const [archivedNotices, setArchivedNotices] = useState<ArchivedNotice[]>([]);
   const [groupingOverrides, setGroupingOverrides] = useState<GroupingOverride[]>([]);
   const [storageReady, setStorageReady] = useState(false);
+  const [storageError, setStorageError] = useState('');
   const rawNoticesRef = useRef<TaxNotice[]>([]);
   const queueItemsRef = useRef<CaptureItem[]>([]);
   const archivedNoticesRef = useRef<ArchivedNotice[]>([]);
@@ -243,7 +244,13 @@ export default function App() {
     if (!response.ok) throw new Error('No se pudo guardar la bandeja en disco.');
     });
     workspaceWrites.current = writing;
-    await writing;
+    try {
+      await writing;
+    } catch (error) {
+      setStorageReady(false);
+      setStorageError(error instanceof Error ? error.message : String(error));
+      throw error;
+    }
   }, []);
 
   useEffect(() => {
@@ -765,14 +772,14 @@ export default function App() {
     const next = [...groupingOverridesRef.current, override];
     groupingOverridesRef.current = next;
     setGroupingOverrides(next);
-    void persistWorkspace();
+    void persistWorkspace().catch(() => {});
   };
 
   const handleUndoGrouping = () => {
     const next = undoGroupingOverride(groupingOverridesRef.current);
     groupingOverridesRef.current = next;
     setGroupingOverrides(next);
-    void persistWorkspace();
+    void persistWorkspace().catch(() => {});
   };
 
   const handleReopen = (archive: ArchivedNotice) => {
@@ -786,7 +793,7 @@ export default function App() {
     setArchivedNotices(history);
     selectedJointIdRef.current = snapshot.id;
     setSelectedJointId(snapshot.id);
-    void persistWorkspace(queueItemsRef.current, active);
+    void persistWorkspace(queueItemsRef.current, active).catch(() => {});
   };
 
   // Handle manual file drag & drop events
@@ -815,6 +822,7 @@ export default function App() {
   if (workspaceRedesignEnabled) {
     return (
       <div className="workspace-shell h-screen min-h-[720px] overflow-hidden bg-[#F5F8FC] text-[#24384D] flex flex-col">
+        {(storageError || captureQueue.storageError) && <div role="alert" className="flex-none border border-red-300 bg-red-50 px-4 py-2 text-sm text-red-900">No se puede guardar el trabajo: {storageError || captureQueue.storageError}. La bandeja está detenida. Conserve la aplicación abierta hasta recuperar el almacenamiento.</div>}
         <AnimatePresence>
           {loading && <LoaderOverlay step={loadingStep} takingLong={takingLong} />}
         </AnimatePresence>

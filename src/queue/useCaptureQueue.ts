@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useReducer, useRef } from 'react';
+import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import {
   errorMessage,
   initialQueueState,
@@ -22,39 +22,49 @@ export function useCaptureQueue({
   const [state, dispatch] = useReducer(queueReducer, { items: initialItems }, (value) =>
     queueReducer(initialQueueState, { type: 'hydrate', items: value.items }));
   const working = useRef(false);
+  const [savedItems, setSavedItems] = useState<CaptureItem[] | null>(null);
+  const [storageError, setStorageError] = useState('');
+  const blocked = useRef(false);
 
   useEffect(() => {
-    if (!ready) return;
-    void persist(state.items);
+    if (!ready || blocked.current) return;
+    void persist(state.items).then(() => setSavedItems(state.items)).catch((error) => {
+      blocked.current = true;
+      setStorageError(errorMessage(error));
+    });
   }, [persist, ready, state.items]);
 
   useEffect(() => {
-    if (!ready) return;
+    if (!ready || blocked.current || savedItems !== state.items) return;
+    const processing = state.items.find((item) => item.status === 'processing');
     const next = state.items.find((item) => item.status === 'pending');
-    if (!next || working.current || state.items.some((item) => item.status === 'processing')) return;
+    if (!processing) {
+      if (next) dispatch({ type: 'start', id: next.id });
+      return;
+    }
+    if (working.current) return;
     working.current = true;
-    const attempt = next.attempts + 1;
-    dispatch({ type: 'start', id: next.id });
-    void process({ ...next, status: 'processing', attempts: attempt, error: undefined })
-      .then((result) => dispatch({ type: 'complete', id: next.id, jointId: result.jointId }))
+    const attempt = processing.attempts;
+    void process(processing)
+      .then((result) => dispatch({ type: 'complete', id: processing.id, jointId: result.jointId }))
       .catch(async (error: unknown) => {
         const message = errorMessage(error);
         if (isTemporaryCaptureError(error) && attempt <= RETRY_DELAYS.length) {
           await new Promise<void>((resolve) => setTimeout(resolve, RETRY_DELAYS[attempt - 1]));
-          dispatch({ type: 'schedule-retry', id: next.id, error: message });
+          dispatch({ type: 'schedule-retry', id: processing.id, error: message });
         } else if (isTemporaryCaptureError(error)) {
-          dispatch({ type: 'fail', id: next.id, error: message });
+          dispatch({ type: 'fail', id: processing.id, error: message });
         } else {
-          dispatch({ type: 'review', id: next.id, error: message });
+          dispatch({ type: 'review', id: processing.id, error: message });
         }
       })
       .finally(() => { working.current = false; });
-  }, [process, ready, state.items]);
+  }, [process, ready, savedItems, state.items]);
 
-  const enqueue = useCallback((items: CaptureItem[]) => dispatch({ type: 'enqueue', items }), []);
-  const retry = useCallback((id: string) => dispatch({ type: 'retry', id, error: '' }), []);
+  const enqueue = useCallback((items: CaptureItem[]) => { if (!blocked.current) dispatch({ type: 'enqueue', items }); }, []);
+  const retry = useCallback((id: string) => { if (!blocked.current) dispatch({ type: 'retry', id, error: '' }); }, []);
   const remove = useCallback((id: string) => dispatch({ type: 'remove', id }), []);
   const hydrate = useCallback((items: CaptureItem[]) => dispatch({ type: 'hydrate', items }), []);
 
-  return { items: state.items, enqueue, retry, remove, hydrate };
+  return { items: state.items, enqueue, retry, remove, hydrate, storageError };
 }
