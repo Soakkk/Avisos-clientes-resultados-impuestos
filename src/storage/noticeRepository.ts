@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { decodeClientDirectory, encodeClientDirectory, sharedClientDirectoryPath } from './clientDirectory';
 import { serializeStorage } from './transactions';
+import { validateBackup } from './backupValidation';
 import type {
   ArchivedNotice,
   ClientDirectoryFile,
@@ -213,16 +214,13 @@ export class NoticeRepository {
   }
 
   async importBackup(backup: NoticeBackup): Promise<void> {
-    if (backup.manifest?.product !== 'avisos-fiscales' || backup.manifest.schemaVersion !== 1 || backup.state?.schemaVersion !== 1) {
-      throw new Error('Copia de seguridad incompatible.');
-    }
     const input = structuredClone(backup);
+    validateBackup(input);
     await serializeStorage(this.stateFile, async () => {
       await this.recoverImport();
       const mapping = new Map<string, string>();
       // Prepare originals under fresh identities; an older workspace never sees overwritten pixels.
-      for (const [id, contents] of Object.entries(input.captures || {})) {
-        if (!/^[a-z0-9-]+$/.test(id) || typeof contents !== 'string' || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(contents)) throw new Error('Captura de la copia incompatible.');
+      for (const [id, contents] of Object.entries(input.captures)) {
         let destination = id;
         try { await stat(path.join(this.capturesDirectory, `${id}.png`)); destination = `import-${randomUUID()}`; }
         catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }

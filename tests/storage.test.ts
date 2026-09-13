@@ -11,6 +11,15 @@ import type { ArchivedNotice, NoticeState } from '../src/storage/types';
 
 const makeRoot = () => mkdtemp(path.join(tmpdir(), 'avisos-storage-'));
 
+const taxNotice = (overrides = {}) => ({
+  id: 'tax-1', modelo: '303', modelo_nombre: 'IVA', periodo: '2T', ejercicio: '2026',
+  cliente_nif: '12345678Z', cliente_nombre: 'José Pérez', importe: 120.5,
+  tipo_resultado: 'A ingresar', fechaCargo: '2026-07-20', fechaLimiteDomiciliacion: '2026-07-15',
+  timestamp: 1, ...overrides,
+});
+
+const jointSnapshot = () => ({ id: 'joint-1', cliente_nombre: 'José Pérez', cliente_nif: '12345678Z', notices: [taxNotice()], total_importe: 120.5, todosDomiciliados: false });
+
 const notice = (overrides: Partial<ArchivedNotice> = {}): ArchivedNotice => ({
   id: 'joint-1',
   archivedAt: '2026-09-13T10:00:00.000Z',
@@ -191,7 +200,7 @@ test('exportar e importar copia de seguridad restaura avisos clientes y capturas
   const sourceRoot = await makeRoot();
   const source = new NoticeRepository(path.join(sourceRoot, 'avisos'), path.join(sourceRoot, 'clientes.json'));
   const state = emptyState();
-  state.archivedNotices = [notice({ captureIds: ['capture-1'] })];
+  state.archivedNotices = [notice({ captureIds: ['capture-1'], snapshot: jointSnapshot() })];
   await source.saveQueue(state);
   await source.writeCapture('capture-1', Buffer.from('imagen-original'));
   const directory = new ClientDirectory(path.join(sourceRoot, 'clientes.json'));
@@ -219,7 +228,7 @@ test('una importación que agota el disco conserva el estado y los originales an
   repository.writeCapture = async () => { throw new Error('ENOSPC'); };
   await assert.rejects(repository.importBackup({
     manifest: { product: 'avisos-fiscales', schemaVersion: 1, exportedAt: '' },
-    state: { ...emptyState(), activeNotices: [{ id: 'nuevo', screenshotId: 'original' }] },
+    state: { ...emptyState(), activeNotices: [taxNotice({ id: 'nuevo', screenshotId: 'original' })] },
     clients: null, captures: { original: Buffer.from('nueva imagen').toString('base64') },
   }), /ENOSPC/);
   assert.deepEqual(await repository.loadQueue(), before);
@@ -255,10 +264,10 @@ test('la API de almacenamiento guarda archiva busca y restaura copias', async ()
 
   try {
     const persisted = emptyState();
-    persisted.activeNotices = [{
+    persisted.activeNotices = [taxNotice({
       cliente_nif: '12345678Z', cliente_nombre: 'José Pérez', iban: 'ES2900811016100006298239',
       verificacion: { estado: 'ok', checks: [], discrepanciasIA: [], segundaLecturaHecha: true },
-    }];
+    })];
     const saved = await fetch(`${base}/api/notices/state`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(persisted),
     });
@@ -267,7 +276,7 @@ test('la API de almacenamiento guarda archiva busca y restaura copias', async ()
     assert.match(await readFile(path.join(root, 'clientes.json'), 'utf8'), /José Pérez/);
 
     assert.equal((await fetch(`${base}/api/notices/archive`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(notice()),
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(notice({ snapshot: jointSnapshot() })),
     })).status, 200);
     const matches = await (await fetch(`${base}/api/notices/search?query=jose&model=303`)).json();
     assert.deepEqual(matches.map((item: ArchivedNotice) => item.id), ['joint-1']);
