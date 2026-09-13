@@ -210,6 +210,36 @@ test('exportar e importar copia de seguridad restaura avisos clientes y capturas
   assert.match(await readFile(path.join(destinationRoot, 'clientes.json'), 'utf8'), /José Pérez/);
 });
 
+test('una importación que agota el disco conserva el estado y los originales anteriores', async () => {
+  const root = await makeRoot();
+  const repository = new NoticeRepository(root, path.join(root, 'clientes.json'));
+  const before = { ...emptyState(), activeNotices: [{ id: 'anterior', screenshotId: 'original' }] };
+  await repository.saveQueue(before);
+  await repository.writeCapture('original', Buffer.from('original anterior'));
+  repository.writeCapture = async () => { throw new Error('ENOSPC'); };
+  await assert.rejects(repository.importBackup({
+    manifest: { product: 'avisos-fiscales', schemaVersion: 1, exportedAt: '' },
+    state: { ...emptyState(), activeNotices: [{ id: 'nuevo', screenshotId: 'original' }] },
+    clients: null, captures: { original: Buffer.from('nueva imagen').toString('base64') },
+  }), /ENOSPC/);
+  assert.deepEqual(await repository.loadQueue(), before);
+  assert.equal(await readFile(path.join(root, 'capturas/original.png'), 'utf8'), 'original anterior');
+});
+
+test('recuperar una importación interrumpida repone workspace y directorio juntos', async () => {
+  const root = await makeRoot();
+  const clientsFile = path.join(root, 'clientes.json');
+  const repository = new NoticeRepository(root, clientsFile);
+  const before = { ...emptyState(), activeNotices: [{ id: 'anterior' }] };
+  const oldClients = { schema_version: 1, clientes: { A: { nombre: 'Anterior' } } };
+  await repository.saveQueue({ ...emptyState(), activeNotices: [{ id: 'importado-a-medias' }] });
+  await writeFile(clientsFile, JSON.stringify({ schema_version: 1, clientes: {} }));
+  await writeFile(path.join(root, 'pending-import.json'), JSON.stringify({ state: before, clients: oldClients }));
+  assert.deepEqual(await repository.loadQueue(), before);
+  assert.deepEqual(JSON.parse(await readFile(clientsFile, 'utf8')), oldClients);
+  assert.ok(!(await readdir(root)).includes('pending-import.json'));
+});
+
 test('la API de almacenamiento guarda archiva busca y restaura copias', async () => {
   const root = await makeRoot();
   const repository = new NoticeRepository(root, path.join(root, 'clientes.json'));
