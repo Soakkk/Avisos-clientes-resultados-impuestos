@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useState, useEffect, useRef } from 'react';
 import { TaxNotice, JointNotice, NoticeVerification, calculateAEATDeadlines, formatDateSpanish, normalizeTaxResult } from './types';
 import { verifyNoticeFields, normalizeNifKey } from './validation';
 import { LoaderOverlay } from './components/LoaderOverlay';
@@ -6,6 +6,10 @@ import { NoticeEditor } from './components/NoticeEditor';
 import { NoticeCard, CardFormat } from './components/NoticeCard';
 import { ApiKeySettings } from './components/ApiKeySettings';
 import { buildWhatsAppText } from './whatsapp';
+import { TemporaryCaptureError } from './queue/reducer';
+import { useCaptureQueue } from './queue/useCaptureQueue';
+import type { CaptureItem } from './queue/types';
+import type { ArchivedNotice, GroupingOverride, NoticeState } from './storage/types';
 import appIcon from './assets/app-icon.png';
 import { 
   Clipboard, 
@@ -79,6 +83,15 @@ async function saveCaptureToDisk(imageBase64: string): Promise<string | undefine
 function deleteCaptureFromDisk(id?: string) {
   if (!id) return;
   fetch('/api/capturas/' + id, { method: 'DELETE' }).catch(() => {});
+}
+
+function fileToDataUrl(file: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(reader.error || new Error('No se pudo leer la captura.'));
+    reader.readAsDataURL(file);
+  });
 }
 
 // Combina la validación determinista (checksums) con el resultado de la segunda
@@ -165,6 +178,13 @@ function parseFechaEspanola(valor: unknown): string | undefined {
 
 export default function App() {
   const [rawNotices, setRawNotices] = useState<TaxNotice[]>([]);
+  const [storageReady, setStorageReady] = useState(false);
+  const rawNoticesRef = useRef<TaxNotice[]>([]);
+  const queueItemsRef = useRef<CaptureItem[]>([]);
+  const archivedNoticesRef = useRef<ArchivedNotice[]>([]);
+  const groupingOverridesRef = useRef<GroupingOverride[]>([]);
+  const selectedJointIdRef = useRef<string | null>(null);
+  const processImageFileRef = useRef<(file: File, persistedFileId?: string) => Promise<{ jointId: string }>>();
   const [loading, setLoading] = useState(false);
   const [loadingStep, setLoadingStep] = useState(0);
   const [takingLong, setTakingLong] = useState(false);
@@ -172,6 +192,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<Record<string, 'text' | 'image'>>({});
   const [copiedTextId, setCopiedTextId] = useState<string | null>(null);
   const [selectedJointId, setSelectedJointId] = useState<string | null>(null);
+  selectedJointIdRef.current = selectedJointId;
   const [openMenu, setOpenMenu] = useState<'file' | 'edit' | 'view' | 'history' | 'help' | null>(null);
   const [historyExpanded, setHistoryExpanded] = useState(true);
   const [showPreferences, setShowPreferences] = useState(false);
@@ -183,6 +204,27 @@ export default function App() {
   const [cardFormat, setCardFormat] = useState<CardFormat>('A');
   const [appVersion, setAppVersion] = useState('');
 
+  const persistWorkspace = useCallback(async (
+    queueItems = queueItemsRef.current,
+    activeNotices = rawNoticesRef.current,
+  ) => {
+    const state: NoticeState = {
+      schemaVersion: 1,
+      queue: queueItems,
+      activeNotices,
+      archivedNotices: archivedNoticesRef.current,
+      groupingOverrides: groupingOverridesRef.current,
+      selectedJointId: selectedJointIdRef.current,
+      updatedAt: new Date().toISOString(),
+    };
+    const response = await fetch('/api/notices/state', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(state),
+    });
+    if (!response.ok) throw new Error('No se pudo guardar la bandeja en disco.');
+  }, []);
+
   // Versión instalada (la expone el servidor en /api/health)
   useEffect(() => {
     fetch('/api/health')
@@ -191,7 +233,8 @@ export default function App() {
       .catch(() => {});
   }, []);
 
-  // Loading settings and initial state from localStorage
+  // Las preferencias ligeras siguen en localStorage. Los avisos se hidratan
+  // desde disco y solo se consulta localStorage para una migración única.
   useEffect(() => {
     const savedAgency = localStorage.getItem('aeat_agency_name');
     if (savedAgency) setAgencyName(savedAgency);
@@ -202,13 +245,27 @@ export default function App() {
     const savedFormat = localStorage.getItem('aeat_card_format');
     if (savedFormat === 'A' || savedFormat === 'B' || savedFormat === 'C') setCardFormat(savedFormat);
 
-    const savedNotices = localStorage.getItem('aeat_raw_notices');
-    if (savedNotices) {
-      try {
-        const parsed: TaxNotice[] = JSON.parse(savedNotices);
+    void fetch('/api/notices/state')
+      .then((response) => {
+        if (!response.ok) throw new Error('No se pudo abrir el almacenamiento de avisos.');
+        return response.json() as Promise<NoticeState>;
+      })
+      .then(async (stored) => {
+        archivedNoticesRef.current = Array.isArray(stored.archivedNotices) ? stored.archivedNotices : [];
+        groupingOverridesRef.current = Array.isArray(stored.groupingOverrides) ? stored.groupingOverrides : [];
+        if (stored.selectedJointId) {
+          selectedJointIdRef.current = stored.selectedJointId;
+          setSelectedJointId(stored.selectedJointId);
+        }
+        const diskNotices = Array.isArray(stored.activeNotices) ? stored.activeNotices as TaxNotice[] : [];
+        let source = diskNotices;
+        const savedNotices = localStorage.getItem('aeat_raw_notices');
+        if (source.length === 0 && savedNotices) source = JSON.parse(savedNotices) as TaxNotice[];
+
+        if (source.length > 0) {
         // Migra avisos antiguos con tildes dañadas y refresca las fechas con
         // las reglas actuales.
-        const normalized = parsed.map((notice) => {
+        const normalized = source.map((notice) => {
           const deadlines = calculateAEATDeadlines(notice.modelo, notice.periodo, notice.ejercicio);
           return {
             ...notice,
@@ -217,8 +274,8 @@ export default function App() {
             fechaLimiteDomiciliacion: deadlines.fechaLimiteDomiciliacion.toISOString(),
           };
         });
+        rawNoticesRef.current = normalized;
         setRawNotices(normalized);
-        localStorage.setItem('aeat_raw_notices', JSON.stringify(normalized));
 
         // Migración suave: avisos guardados por versiones anteriores llevan la
         // captura completa en base64 dentro de localStorage. Se re-comprimen a
@@ -234,22 +291,26 @@ export default function App() {
             )
           ).then((migrated) => saveNoticesToLocal(migrated));
         }
-      } catch (e) {
-        console.error("Failed to load saved notices", e);
-      }
-    }
+        }
+        captureQueue.hydrate(Array.isArray(stored.queue) ? stored.queue as CaptureItem[] : []);
+        await persistWorkspace(stored.queue as CaptureItem[] || [], rawNoticesRef.current);
+        localStorage.removeItem('aeat_raw_notices');
+        setStorageReady(true);
+      })
+      .catch((error) => {
+        console.error('Failed to load saved notices', error);
+        alert('No se ha podido abrir el almacenamiento local. Reinicie la aplicación antes de añadir más capturas.');
+      });
   }, []);
 
   // Save changes to localStorage
   const saveNoticesToLocal = (newNotices: TaxNotice[]) => {
+    rawNoticesRef.current = newNotices;
     setRawNotices(newNotices);
-    try {
-      localStorage.setItem('aeat_raw_notices', JSON.stringify(newNotices));
-    } catch (e) {
-      // Cuota de localStorage superada: mejor avisar que perder avisos en silencio.
-      console.error('No se pudo guardar en localStorage', e);
-      alert('Atención: no se han podido guardar los avisos en el almacenamiento local (espacio lleno). Elimine avisos antiguos con el botón "Limpiar".');
-    }
+    void persistWorkspace(queueItemsRef.current, newNotices).catch((error) => {
+      console.error('No se pudo guardar en disco', error);
+      alert('Atención: no se han podido guardar los avisos en disco. No añada más capturas hasta reiniciar la aplicación.');
+    });
   };
 
   const handleAgencyNameChange = (val: string) => {
@@ -295,7 +356,7 @@ export default function App() {
   };
 
   // Process the uploaded or pasted image file
-  const processImageFile = async (file: File) => {
+  const processImageFile = async (file: File, persistedFileId?: string) => {
     setLoading(true);
     setLoadingStep(0);
     setTakingLong(false);
@@ -309,13 +370,7 @@ export default function App() {
 
     try {
       // 1. Convert file to base64
-      const reader = new FileReader();
-      const base64Promise = new Promise<string>((resolve, reject) => {
-        reader.onload = () => resolve(reader.result as string);
-        reader.onerror = (e) => reject(e);
-      });
-      reader.readAsDataURL(file);
-      const base64Image = await base64Promise;
+      const base64Image = await fileToDataUrl(file);
 
       // 2. Call backend server API
       const response = await fetch('/api/gemini/analyze-tax', {
@@ -326,7 +381,11 @@ export default function App() {
 
       if (!response.ok) {
         const errData = await response.json().catch(() => ({}));
-        throw new Error(errData.error || `Error en el servidor: ${response.status}`);
+        const message = errData.error || `Error en el servidor: ${response.status}`;
+        if (response.status === 408 || response.status === 429 || response.status >= 500) {
+          throw new TemporaryCaptureError(message);
+        }
+        throw new Error(message);
       }
 
       const data = await response.json();
@@ -341,7 +400,7 @@ export default function App() {
         })
           .then((r) => (r.ok ? r.json() : null))
           .catch(() => null),
-        saveCaptureToDisk(base64Image),
+        persistedFileId ? Promise.resolve(persistedFileId) : saveCaptureToDisk(base64Image),
         compressToThumbnail(base64Image),
       ]);
 
@@ -377,12 +436,15 @@ export default function App() {
       );
 
       // Add to our list
-      const updated = [newNotice, ...rawNotices];
+      const updated = [newNotice, ...rawNoticesRef.current];
       saveNoticesToLocal(updated);
+      return { jointId: normalizeNifKey(newNotice.cliente_nif, newNotice.cliente_nombre) };
 
     } catch (err: any) {
       console.error(err);
-      alert(`Error al analizar la imagen: ${err.message || err}`);
+      if (err instanceof TemporaryCaptureError) throw err;
+      if (err instanceof TypeError) throw new TemporaryCaptureError(err.message || 'Error de red');
+      throw err;
     } finally {
       clearInterval(stepInterval);
       clearTimeout(longTimer);
@@ -391,37 +453,88 @@ export default function App() {
     }
   };
 
+  processImageFileRef.current = processImageFile;
+
+  const processQueuedCapture = useCallback(async (item: CaptureItem) => {
+    const response = await fetch(`/api/capturas/${item.fileId}`);
+    if (!response.ok) {
+      if (response.status >= 500) throw new TemporaryCaptureError('No se pudo recuperar la captura guardada.');
+      throw new Error('La captura original no está disponible; vuelva a seleccionarla.');
+    }
+    const blob = await response.blob();
+    const file = new File([blob], `${item.fileId}.png`, { type: blob.type || 'image/png' });
+    return processImageFileRef.current!(file, item.fileId);
+  }, []);
+
+  const persistQueue = useCallback(async (items: CaptureItem[]) => {
+    queueItemsRef.current = items;
+    await persistWorkspace(items, rawNoticesRef.current);
+  }, [persistWorkspace]);
+
+  const captureQueue = useCaptureQueue({ ready: storageReady, process: processQueuedCapture, persist: persistQueue });
+
+  const enqueueFiles = useCallback(async (files: File[]) => {
+    if (!storageReady) {
+      alert('El almacenamiento local todavía no está disponible. Espere un momento y vuelva a intentarlo.');
+      return;
+    }
+    const accepted = files.filter((file) => file.type.startsWith('image/'));
+    if (accepted.length === 0) return;
+    try {
+      const queued: CaptureItem[] = [];
+      for (const [index, file] of accepted.entries()) {
+        const dataUrl = await fileToDataUrl(file);
+        const fileId = await saveCaptureToDisk(dataUrl);
+        if (!fileId) throw new Error('No se pudo guardar una de las capturas.');
+        queued.push({
+          id: `${Date.now().toString(36)}-${index}-${Math.random().toString(36).slice(2, 8)}`,
+          fileId,
+          status: 'pending',
+          attempts: 0,
+          createdAt: new Date().toISOString(),
+        });
+      }
+      captureQueue.enqueue(queued);
+    } catch (error) {
+      console.error(error);
+      alert('No se ha podido guardar la bandeja en disco. No se aceptarán más capturas hasta que vuelva a intentarlo.');
+    }
+  }, [captureQueue.enqueue, storageReady]);
+
   // Listening for paste events globally
   useEffect(() => {
     const handlePaste = (e: ClipboardEvent) => {
       const items = e.clipboardData?.items;
       if (!items) return;
+      const files: File[] = [];
       for (let i = 0; i < items.length; i++) {
         if (items[i].type.indexOf("image") !== -1) {
           const file = items[i].getAsFile();
-          if (file) {
-            processImageFile(file);
-          }
+          if (file) files.push(file);
         }
       }
+      if (files.length > 0) void enqueueFiles(files);
     };
     window.addEventListener("paste", handlePaste);
     return () => window.removeEventListener("paste", handlePaste);
-  }, [rawNotices]);
+  }, [enqueueFiles]);
 
   // Click handler to trigger browser clipboard read API (Chrome/Edge/Opera supported)
   const handleReadClipboard = async () => {
     try {
       const clipboardItems = await navigator.clipboard.read();
+      const files: File[] = [];
       for (const item of clipboardItems) {
         for (const type of item.types) {
           if (type.startsWith("image/")) {
             const blob = await item.getType(type);
-            const file = new File([blob], "screenshot.png", { type });
-            await processImageFile(file);
-            return;
+            files.push(new File([blob], `captura-${files.length + 1}.png`, { type }));
           }
         }
+      }
+      if (files.length > 0) {
+        await enqueueFiles(files);
+        return;
       }
       alert("No se encontró ninguna imagen en el portapapeles. Haz una captura primero (Impr Pant) y pulsa Ctrl+V directamente en la ventana.");
     } catch (err) {
@@ -603,17 +716,13 @@ export default function App() {
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragOver(false);
-    const files = e.dataTransfer.files;
-    if (files.length > 0) {
-      processImageFile(files[0]);
-    }
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) void enqueueFiles(files);
   };
 
   const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
-    if (files && files.length > 0) {
-      processImageFile(files[0]);
-    }
+    if (files && files.length > 0) void enqueueFiles(Array.from(files));
   };
 
   const workspaceRedesignEnabled = true;
@@ -719,7 +828,7 @@ export default function App() {
           <span className="text-xs text-stone-500 pr-2">Versi&oacute;n {appVersion || '...'}</span>
         </div>
 
-        <input id="workspace-file-input" type="file" accept="image/*" className="hidden" onChange={handleFileInputChange} />
+        <input id="workspace-file-input" type="file" accept="image/*" multiple className="hidden" onChange={handleFileInputChange} />
 
         <div className="flex-none bg-white border-b border-stone-200 px-5 py-2">
           <div className="mx-auto flex max-w-[1760px] items-center gap-3">
@@ -1163,6 +1272,7 @@ export default function App() {
                 <input
                   type="file"
                   accept="image/*"
+                  multiple
                   className="hidden"
                   onChange={handleFileInputChange}
                 />
