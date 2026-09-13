@@ -20,6 +20,7 @@ import { TemporaryCaptureError } from './queue/reducer';
 import { useCaptureQueue } from './queue/useCaptureQueue';
 import type { CaptureItem } from './queue/types';
 import type { ArchivedNotice, GroupingOverride, NoticeState } from './storage/types';
+import type { UpdateStatus } from './update-status';
 import appIcon from './assets/app-icon.png';
 import { 
   Clipboard, 
@@ -215,6 +216,7 @@ export default function App() {
   const [signatureText, setSignatureText] = useState('Atentamente,\nAsesoría E. Marín');
   const [cardFormat, setCardFormat] = useState<CardFormat>('A');
   const [appVersion, setAppVersion] = useState('');
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
 
   const persistWorkspace = useCallback(async (
     queueItems = queueItemsRef.current,
@@ -236,6 +238,21 @@ export default function App() {
     });
     if (!response.ok) throw new Error('No se pudo guardar la bandeja en disco.');
   }, []);
+
+  useEffect(() => {
+    const updates = window.updates;
+    if (!updates) return;
+    const stopStatus = updates.onStatus(setUpdateStatus);
+    const stopSaveRequest = updates.onSaveRequested(() => {
+      void persistWorkspace()
+        .then(() => updates.stateSaved(true))
+        .catch((error) => updates.stateSaved(false, error instanceof Error ? error.message : String(error)));
+    });
+    return () => {
+      stopStatus();
+      stopSaveRequest();
+    };
+  }, [persistWorkspace]);
 
   // Versión instalada (la expone el servidor en /api/health)
   useEffect(() => {
@@ -890,7 +907,23 @@ export default function App() {
             </div>
           </div>
 
-          <span className="text-xs text-stone-500 pr-2">Versi&oacute;n {appVersion || '...'}</span>
+          <div className="flex items-center gap-2 pr-2 text-xs text-stone-500">
+            {updateStatus && (
+              <span className="update-summary">
+                {updateStatus.status === 'downloading' && `Descargando ${Math.round(updateStatus.percent || 0)}%`}
+                {updateStatus.status === 'ready' && `Versión ${updateStatus.version || 'nueva'} lista`}
+                {updateStatus.status === 'installing' && 'Instalando actualización'}
+                {updateStatus.status === 'error' && 'Actualización pendiente de reintento'}
+                {updateStatus.status === 'checking' && (updateStatus.message || 'Comprobando actualizaciones')}
+              </span>
+            )}
+            {updateStatus?.status === 'ready' && (
+              <button type="button" className="update-restart" onClick={() => void window.updates?.restart()}>
+                Reiniciar y actualizar
+              </button>
+            )}
+            <span>Versi&oacute;n {appVersion || '...'}</span>
+          </div>
         </div>
 
         <input id="workspace-file-input" type="file" accept="image/*" multiple className="hidden" onChange={handleFileInputChange} />

@@ -53,6 +53,7 @@
     "files": [
       "dist/**/*",
       "main-electron.cjs",
+      "preload.cjs",
       "package.json",
       "assets/app.ico",
       "node_modules/**/*"

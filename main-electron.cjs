@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const path = require('path');
 const http = require('http');
 const { autoUpdater } = require('electron-updater');
@@ -6,6 +6,8 @@ const { autoUpdater } = require('electron-updater');
 let mainWindow;
 let expressAppProcess;
 let updateTimer;
+let updateReady = false;
+let pendingStateSave = null;
 
 // Function to check if the local server is up and running
 function checkServerReady(url, callback) {
@@ -58,6 +60,7 @@ function createWindow() {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
+      preload: path.join(__dirname, 'preload.cjs'),
     },
   });
 
@@ -100,54 +103,76 @@ function createWindow() {
 }
 
 // ---- Actualizaciones automáticas vía GitHub Releases ----
-// Mismo flujo que EscanerFotos: comprobar en segundo plano, preguntar antes de
-// descargar, barra de progreso, e instalar en silencio (reabre la app sola).
-autoUpdater.autoDownload = false;
-autoUpdater.autoInstallOnAppQuit = false;
+// Descarga silenciosa, estado visible en la interfaz e instalación solo cuando
+// el workspace ya ha confirmado su persistencia (o al cerrar normalmente).
+autoUpdater.autoDownload = true;
+autoUpdater.autoInstallOnAppQuit = true;
 autoUpdater.allowPrerelease = false;
 autoUpdater.allowDowngrade = false;
 
-function comprobarActualizaciones() {
-  if (!app.isPackaged) return; // solo tiene sentido en el .exe instalado
+function sendUpdateStatus(state) {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('update-status', state);
+}
 
-  autoUpdater.checkForUpdates().catch(() => {
-    // Sin internet o error de red: fallamos en silencio, como EscanerFotos.
+function comprobarActualizaciones() {
+  if (!app.isPackaged) return Promise.resolve(false);
+
+  sendUpdateStatus({ status: 'checking', workspaceSaved: false });
+  return autoUpdater.checkForUpdates().then(() => true).catch((error) => {
+    sendUpdateStatus({ status: 'error', message: String(error?.message || error), recoverable: true, workspaceSaved: false });
+    return false;
   });
 }
 
-autoUpdater.on('update-available', async (info) => {
-  const { response } = await dialog.showMessageBox(mainWindow, {
-    type: 'info',
-    title: 'Actualización disponible',
-    message: `Hay una versión nueva de Generador de Avisos Fiscales (${info.version}).`,
-    detail: '¿Descargar e instalar ahora?',
-    buttons: ['Sí', 'Más tarde'],
-    defaultId: 0,
-    cancelId: 1,
-  });
-  if (response === 0) {
-    autoUpdater.downloadUpdate().catch(() => {
-      dialog.showMessageBox(mainWindow, {
-        type: 'warning',
-        title: 'Actualización',
-        message: 'No se pudo descargar la actualización. Revisa tu conexión e inténtalo más tarde.',
-      });
-    });
-  }
+autoUpdater.on('update-available', (info) => {
+  sendUpdateStatus({ status: 'downloading', version: info.version, percent: 0, workspaceSaved: false });
+});
+
+autoUpdater.on('update-not-available', (info) => {
+  sendUpdateStatus({ status: 'checking', version: info.version, message: 'Aplicación actualizada', workspaceSaved: false });
 });
 
 autoUpdater.on('download-progress', (progress) => {
   if (mainWindow) mainWindow.setProgressBar(progress.percent / 100);
+  sendUpdateStatus({ status: 'downloading', percent: progress.percent, workspaceSaved: false });
 });
 
-autoUpdater.on('update-downloaded', () => {
+autoUpdater.on('update-downloaded', (info) => {
   if (mainWindow) mainWindow.setProgressBar(-1);
-  autoUpdater.quitAndInstall();
+  updateReady = true;
+  sendUpdateStatus({ status: 'ready', version: info.version, workspaceSaved: false });
 });
 
-autoUpdater.on('error', () => {
+autoUpdater.on('error', (error) => {
   if (mainWindow) mainWindow.setProgressBar(-1);
-  // Silencioso: igual que EscanerFotos, no molestamos si falla la comprobación.
+  sendUpdateStatus({ status: 'error', message: String(error?.message || error), recoverable: true, workspaceSaved: false });
+});
+
+ipcMain.handle('check-for-updates', () => comprobarActualizaciones());
+
+ipcMain.on('state-saved', (event, result) => {
+  if (!pendingStateSave || pendingStateSave.sender !== event.sender) return;
+  const pending = pendingStateSave;
+  pendingStateSave = null;
+  clearTimeout(pending.timer);
+  if (result?.success) pending.resolve(true);
+  else pending.reject(new Error(result?.message || 'No se pudo guardar el estado.'));
+});
+
+ipcMain.handle('restart-and-install', async (event) => {
+  if (!updateReady) return false;
+  const saved = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingStateSave = null;
+      reject(new Error('La aplicación no confirmó el guardado a tiempo.'));
+    }, 15_000);
+    pendingStateSave = { sender: event.sender, resolve, reject, timer };
+    event.sender.send('save-state-before-update');
+  });
+  if (!saved) return false;
+  sendUpdateStatus({ status: 'installing', workspaceSaved: true });
+  autoUpdater.quitAndInstall(false, true);
+  return true;
 });
 
 // Start local Express server first, then boot the Electron window
