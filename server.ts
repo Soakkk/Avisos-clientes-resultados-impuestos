@@ -4,6 +4,9 @@ import fs from "fs";
 import os from "os";
 import dotenv from "dotenv";
 import { GoogleGenAI, Type } from "@google/genai";
+import { NoticeRepository } from "./src/storage/noticeRepository";
+import { createStorageRouter } from "./src/storage/router";
+import { ClientDirectory } from "./src/storage/clientDirectory";
 
 // Load environment variables in development
 dotenv.config();
@@ -39,24 +42,16 @@ const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
 // base64, dejando de guardar avisos en silencio). El frontend solo conserva
 // una miniatura pequeña y el id del archivo.
 const CAPTURAS_DIR = path.join(CONFIG_DIR, "capturas");
+const noticeRepository = new NoticeRepository(CONFIG_DIR);
+const clientDirectory = new ClientDirectory();
 
-// Barrido al arrancar: capturas huérfanas de más de 90 días se eliminan para
-// que la carpeta no crezca sin límite (los avisos activos rara vez viven tanto).
-function limpiarCapturasAntiguas() {
-  try {
-    if (!fs.existsSync(CAPTURAS_DIR)) return;
-    const limite = Date.now() - 90 * 24 * 60 * 60 * 1000;
-    for (const nombre of fs.readdirSync(CAPTURAS_DIR)) {
-      const ruta = path.join(CAPTURAS_DIR, nombre);
-      try {
-        if (fs.statSync(ruta).mtimeMs < limite) fs.unlinkSync(ruta);
-      } catch { /* si un archivo falla, seguimos con el resto */ }
-    }
-  } catch (err) {
-    console.warn("No se pudo limpiar capturas antiguas:", err);
-  }
-}
-limpiarCapturasAntiguas();
+app.use(createStorageRouter(noticeRepository, clientDirectory));
+
+// El barrido conserva cualquier captura todavía referenciada por la bandeja,
+// avisos activos o historial; solo elimina huérfanos antiguos.
+noticeRepository.cleanupOrphanedCaptures(90 * 24 * 60 * 60 * 1000).catch((err) => {
+  console.warn("No se pudo limpiar capturas antiguas:", err);
+});
 
 function loadStoredApiKey(): string | undefined {
   try {
