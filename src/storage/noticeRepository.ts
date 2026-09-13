@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -32,7 +33,7 @@ export function defaultNoticeStoragePath(): string {
 
 async function atomicWriteJson(filePath: string, value: unknown): Promise<void> {
   await mkdir(path.dirname(filePath), { recursive: true });
-  const temporary = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  const temporary = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   await writeFile(temporary, JSON.stringify(value, null, 2), 'utf8');
   await rename(temporary, filePath);
 }

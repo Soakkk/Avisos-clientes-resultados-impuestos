@@ -78,6 +78,22 @@ test('la escritura de almacenamiento es atómica y deja un JSON completo', async
   assert.deepEqual(JSON.parse(await readFile(path.join(root, 'notices.json'), 'utf8')), state);
 });
 
+test('las escrituras simultáneas no comparten el mismo archivo temporal', async () => {
+  const root = await makeRoot();
+  const repository = new NoticeRepository(root);
+  const states = Array.from({ length: 16 }, (_, index) => ({
+    ...emptyState(),
+    activeNotices: [{ index }],
+    updatedAt: `2026-09-13T10:00:${String(index).padStart(2, '0')}.000Z`,
+  }));
+
+  await Promise.all(states.map((state) => repository.saveQueue(state)));
+
+  const stored = await repository.loadQueue();
+  assert.ok(states.some((state) => JSON.stringify(state) === JSON.stringify(stored)));
+  assert.deepEqual((await readdir(root)).sort(), ['notices.json']);
+});
+
 test('archivar es idempotente y conserva la captura y el snapshot', async () => {
   const root = await makeRoot();
   const repository = new NoticeRepository(root);
