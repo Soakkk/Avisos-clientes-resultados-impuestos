@@ -1020,6 +1020,7 @@ export default function App() {
               items={captureQueue.items}
               selectedJointId={selectedJoint?.id}
               onRetry={captureQueue.retry}
+              onViewCapture={(fileId) => window.open(`/api/capturas/${encodeURIComponent(fileId)}`, '_blank')}
               onSelect={(jointId) => setSelectedJointId(jointId)}
             />
           </div>
