@@ -1,4 +1,5 @@
 const { app, BrowserWindow, ipcMain, shell } = require('electron');
+const { randomUUID } = require('node:crypto');
 const path = require('path');
 const http = require('http');
 const { autoUpdater } = require('electron-updater');
@@ -158,7 +159,7 @@ autoUpdater.on('error', (error) => {
 ipcMain.handle('check-for-updates', () => comprobarActualizaciones());
 
 ipcMain.on('state-saved', (event, result) => {
-  if (!pendingStateSave || pendingStateSave.sender !== event.sender) return;
+  if (!pendingStateSave || pendingStateSave.sender !== event.sender || pendingStateSave.requestId !== result?.requestId) return;
   const pending = pendingStateSave;
   pendingStateSave = null;
   clearTimeout(pending.timer);
@@ -171,12 +172,13 @@ function prepareExit(sender, install) {
   exitInProgress = (async () => {
   try {
   const saved = await new Promise((resolve, reject) => {
+    const requestId = randomUUID();
     const timer = setTimeout(() => {
-      pendingStateSave = null;
+      if (pendingStateSave?.requestId === requestId) pendingStateSave = null;
       reject(new Error('La aplicación no confirmó el guardado a tiempo.'));
     }, 15_000);
-    pendingStateSave = { sender, resolve, reject, timer };
-    sender.send('save-state-before-update');
+    pendingStateSave = { requestId, sender, resolve, reject, timer };
+    sender.send('save-state-before-update', { requestId });
   });
   if (!saved) return false;
   exitApproved = true;

@@ -278,10 +278,10 @@ export default function App() {
     const updates = window.updates;
     if (!updates) return;
     const stopStatus = updates.onStatus(setUpdateStatus);
-    const stopSaveRequest = updates.onSaveRequested(() => {
+    const stopSaveRequest = updates.onSaveRequested((requestId) => {
       void hydration.promise.then(() => persistWorkspace())
-        .then(() => updates.stateSaved(true))
-        .catch((error) => updates.stateSaved(false, error instanceof Error ? error.message : String(error)));
+        .then(() => updates.stateSaved(requestId, true))
+        .catch((error) => updates.stateSaved(requestId, false, error instanceof Error ? error.message : String(error)));
     });
     return () => {
       stopStatus();
