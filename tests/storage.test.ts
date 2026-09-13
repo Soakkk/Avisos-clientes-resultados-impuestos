@@ -146,6 +146,25 @@ test('archivar es idempotente y conserva la captura y el snapshot', async () => 
   assert.deepEqual(stored.archivedNotices[0].snapshot, { total_importe: 120.5 });
 });
 
+test('archivar simultáneamente desde dos repositorios conserva todos los avisos', async () => {
+  const root = await makeRoot();
+  const first = new NoticeRepository(root);
+  const second = new NoticeRepository(root);
+  await first.saveQueue(emptyState());
+  await Promise.all(Array.from({ length: 12 }, (_, index) =>
+    (index % 2 ? first : second).archive(notice({ id: `joint-${index}` }))));
+  assert.equal((await first.loadQueue()).archivedNotices.length, 12);
+});
+
+test('guardados concurrentes conservan la última solicitud aunque la anterior sea grande', async () => {
+  const root = await makeRoot();
+  const repository = new NoticeRepository(root);
+  const oldState = { ...emptyState(), activeNotices: [{ text: 'x'.repeat(8_000_000) }] };
+  const latestState = { ...emptyState(), activeNotices: [{ id: 'último' }] };
+  await Promise.all([repository.saveQueue(oldState), repository.saveQueue(latestState)]);
+  assert.deepEqual((await repository.loadQueue()).activeNotices, [{ id: 'último' }]);
+});
+
 test('la búsqueda de almacenamiento normaliza nombre y filtra modelo periodo y fecha', async () => {
   const root = await makeRoot();
   const repository = new NoticeRepository(root);

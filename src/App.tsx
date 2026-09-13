@@ -198,6 +198,7 @@ export default function App() {
   const archivedNoticesRef = useRef<ArchivedNotice[]>([]);
   const groupingOverridesRef = useRef<GroupingOverride[]>([]);
   const selectedJointIdRef = useRef<string | null>(null);
+  const workspaceWrites = useRef<Promise<unknown>>(Promise.resolve());
   const processImageFileRef = useRef<(file: File, persistedFileId?: string) => Promise<{ jointId: string }>>();
   const [loading, setLoading] = useState(false);
   const [loadingStep, setLoadingStep] = useState(0);
@@ -232,12 +233,17 @@ export default function App() {
       selectedJointId: selectedJointIdRef.current,
       updatedAt: new Date().toISOString(),
     };
+    const body = JSON.stringify(state);
+    const writing = workspaceWrites.current.catch(() => {}).then(async () => {
     const response = await fetch('/api/notices/state', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(state),
+      body,
     });
     if (!response.ok) throw new Error('No se pudo guardar la bandeja en disco.');
+    });
+    workspaceWrites.current = writing;
+    await writing;
   }, []);
 
   useEffect(() => {
@@ -724,10 +730,6 @@ export default function App() {
       captureIds: joint.notices.flatMap((notice) => notice.screenshotId ? [notice.screenshotId] : []),
       snapshot: joint,
     };
-    const response = await fetch('/api/notices/archive', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(archive),
-    });
-    if (!response.ok) throw new Error('No se pudo archivar el aviso.');
     if (!archivedNoticesRef.current.some((item) => item.id === archive.id)) {
       archivedNoticesRef.current = [archive, ...archivedNoticesRef.current];
       setArchivedNotices(archivedNoticesRef.current);

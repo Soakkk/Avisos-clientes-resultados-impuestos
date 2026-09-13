@@ -3,6 +3,7 @@ import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:
 import os from 'node:os';
 import path from 'node:path';
 import { sharedClientDirectoryPath } from './clientDirectory';
+import { serializeStorage } from './transactions';
 import type {
   ArchivedNotice,
   ClientDirectoryFile,
@@ -51,6 +52,10 @@ export class NoticeRepository {
   }
 
   async loadQueue(): Promise<NoticeState> {
+    return serializeStorage(this.stateFile, () => this.readState());
+  }
+
+  private async readState(): Promise<NoticeState> {
     try {
       const parsed = JSON.parse(await readFile(this.stateFile, 'utf8')) as NoticeState;
       if (parsed.schemaVersion !== 1) throw new Error('Estado de avisos incompatible.');
@@ -63,16 +68,19 @@ export class NoticeRepository {
 
   async saveQueue(state: NoticeState): Promise<void> {
     if (state.schemaVersion !== 1) throw new Error('Estado de avisos incompatible.');
-    await atomicWriteJson(this.stateFile, state);
+    const snapshot = structuredClone(state);
+    await serializeStorage(this.stateFile, () => atomicWriteJson(this.stateFile, snapshot));
   }
 
   async archive(notice: ArchivedNotice): Promise<NoticeState> {
-    const state = await this.loadQueue();
-    if (!state.archivedNotices.some((item) => item.id === notice.id)) {
-      state.archivedNotices.push(notice);
-      await this.saveQueue(state);
-    }
-    return state;
+    return serializeStorage(this.stateFile, async () => {
+      const state = await this.readState();
+      if (!state.archivedNotices.some((item) => item.id === notice.id)) {
+        state.archivedNotices.push(notice);
+        await atomicWriteJson(this.stateFile, state);
+      }
+      return state;
+    });
   }
 
   async search(filters: NoticeSearchFilters): Promise<ArchivedNotice[]> {

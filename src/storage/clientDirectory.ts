@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
+import { serializeStorage } from './transactions';
 import type {
   ClientDirectoryFile,
   ClientRecord,
@@ -100,6 +101,7 @@ export class ClientDirectory {
 
     if (!nif || accepted.length === 0) return { written: false, rejectedFields };
 
+    return serializeStorage(this.filePath, async () => {
     const document = await this.load();
     const record = document.clients[nif] || { nif, fields: {}, conflicts: {} };
     const updatedAt = this.now().toISOString();
@@ -119,5 +121,6 @@ export class ClientDirectory {
     document.updatedAt = updatedAt;
     await atomicWriteJson(this.filePath, encodeClientDirectory(document));
     return { written: true, rejectedFields, record };
+    });
   }
 }
