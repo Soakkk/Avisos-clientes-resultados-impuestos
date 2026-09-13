@@ -32,6 +32,44 @@ const emptyState = (): NoticeState => ({
   updatedAt: '2026-09-13T10:00:00.000Z',
 });
 
+test('el directorio lee y conserva el contrato común del escáner', async () => {
+  const root = await makeRoot();
+  const file = path.join(root, 'clientes.json');
+  await writeFile(file, JSON.stringify({ schema_version: 1, clientes: {
+    '12345678Z': { nif: '12345678Z', nombre: 'Ana original', carpeta: 'C:/Ana',
+      metadatos: { nombre: { origen: 'escaner', fecha: '2026-01-01' } }, conflictos: {} },
+  } }));
+  const directory = new ClientDirectory(file);
+  assert.equal((await directory.load()).clients['12345678Z'].fields.nombre.value, 'Ana original');
+  await directory.mergeVerified({ nif: '12345678Z', fields: {
+    nombre: { value: 'Ana alternativa', verified: true },
+    iban: { value: 'ES2900811016100006298239', verified: true },
+  } }, 'avisos-fiscales');
+  const stored = JSON.parse(await readFile(file, 'utf8'));
+  assert.equal(stored.schema_version, 1);
+  assert.equal(stored.clientes['12345678Z'].carpeta, 'C:/Ana');
+  assert.equal(stored.clientes['12345678Z'].nombre, 'Ana original');
+  assert.equal(stored.clientes['12345678Z'].metadatos.nombre.origen, 'escaner');
+  assert.deepEqual(stored.clientes['12345678Z'].conflictos.nombre, ['Ana original', 'Ana alternativa']);
+  assert.equal(stored.clientes['12345678Z'].metadatos.iban.origen, 'avisos-fiscales');
+});
+
+test('el directorio migra el formato anterior de avisos sin perder metadatos ni conflictos', async () => {
+  const root = await makeRoot();
+  const file = path.join(root, 'clientes.json');
+  const original = { value: 'Ana', source: 'avisos-antiguo', updatedAt: '2026-01-01' };
+  const alternative = { value: 'Otra Ana', source: 'revision', updatedAt: '2026-02-01' };
+  await writeFile(file, JSON.stringify({ schemaVersion: 1, clients: {
+    '12345678Z': { nif: '12345678Z', fields: { nombre: original }, conflicts: { nombre: [alternative] } },
+  } }));
+  const directory = new ClientDirectory(file);
+  await directory.mergeVerified({ nif: '12345678Z', fields: { carpeta: { value: 'C:/Ana', verified: true } } }, 'avisos-fiscales');
+  const reloaded = (await directory.load()).clients['12345678Z'];
+  assert.deepEqual(reloaded.fields.nombre, original);
+  assert.deepEqual(reloaded.conflicts.nombre, [alternative]);
+  assert.equal(JSON.parse(await readFile(file, 'utf8')).schema_version, 1);
+});
+
 test('solo publica datos verificados en el directorio común', async () => {
   const root = await makeRoot();
   const directory = new ClientDirectory(path.join(root, 'clientes.json'));
@@ -47,9 +85,9 @@ test('solo publica datos verificados en el directorio común', async () => {
   assert.equal(result.written, true);
   assert.deepEqual(result.rejectedFields, ['nombre']);
   const stored = JSON.parse(await readFile(path.join(root, 'clientes.json'), 'utf8'));
-  assert.equal(stored.clients.B12345678.fields.nombre, undefined);
-  assert.equal(stored.clients.B12345678.fields.iban.value, 'ES2900811016100006298239');
-  assert.equal(stored.clients.B12345678.fields.iban.source, 'avisos-fiscales');
+  assert.equal(stored.clientes.B12345678.nombre, undefined);
+  assert.equal(stored.clientes.B12345678.iban, 'ES2900811016100006298239');
+  assert.equal(stored.clientes.B12345678.metadatos.iban.origen, 'avisos-fiscales');
 });
 
 test('no escribe cuando ningún campo está verificado', async () => {

@@ -1,4 +1,5 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import type {
@@ -20,9 +21,51 @@ export function sharedClientDirectoryPath(environment = process.env): string {
 
 async function atomicWriteJson(filePath: string, value: unknown): Promise<void> {
   await mkdir(path.dirname(filePath), { recursive: true });
-  const temporary = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  const temporary = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   await writeFile(temporary, JSON.stringify(value, null, 2), 'utf8');
   await rename(temporary, filePath);
+}
+
+/** The on-disk contract is shared with Escáner; the React API remains normalized. */
+export function decodeClientDirectory(parsed: any): ClientDirectoryFile {
+  if (parsed?.schemaVersion === 1 && parsed.clients) return parsed;
+  if (parsed?.schema_version !== 1 || !parsed.clientes) throw new Error('Directorio de clientes incompatible.');
+  const clients: Record<string, ClientRecord> = {};
+  for (const [key, value] of Object.entries(parsed.clientes)) {
+    const client = value as any;
+    const fields: Record<string, StoredField> = {};
+    const conflicts: Record<string, StoredField[]> = {};
+    for (const [field, data] of Object.entries(client)) {
+      if (field === 'nif' || typeof data !== 'string') continue;
+      fields[field] = { value: data, source: client.metadatos?.[field]?.origen || '', updatedAt: client.metadatos?.[field]?.fecha || '' };
+    }
+    for (const [field, alternatives] of Object.entries(client.conflictos || {})) {
+      conflicts[field] = (alternatives as string[]).map((data) => ({
+        value: data,
+        source: client.conflictos_metadatos?.[field]?.[data]?.origen || fields[field]?.source || '',
+        updatedAt: client.conflictos_metadatos?.[field]?.[data]?.fecha || fields[field]?.updatedAt || '',
+      }));
+    }
+    const nif = normalizeNif(client.nif || key);
+    clients[nif] = { nif, fields, conflicts, shared: client };
+  }
+  return { schemaVersion: 1, clients, updatedAt: parsed.actualizado_en || '', shared: parsed };
+}
+
+export function encodeClientDirectory(document: ClientDirectoryFile) {
+  const clientes = Object.fromEntries(Object.entries(document.clients).map(([nif, record]) => {
+    const client: any = { ...record.shared, nif, metadatos: { ...(record.shared?.metadatos as object) }, conflictos: {}, conflictos_metadatos: {} };
+    for (const [field, stored] of Object.entries(record.fields)) {
+      client[field] = stored.value;
+      client.metadatos[field] = { ...client.metadatos[field], origen: stored.source, fecha: stored.updatedAt };
+    }
+    for (const [field, alternatives] of Object.entries(record.conflicts)) {
+      client.conflictos[field] = alternatives.map((item) => item.value);
+      client.conflictos_metadatos[field] = Object.fromEntries(alternatives.map((item) => [item.value, { origen: item.source, fecha: item.updatedAt }]));
+    }
+    return [nif, client];
+  }));
+  return { ...document.shared, schema_version: 1, clientes, actualizado_en: document.updatedAt };
 }
 
 export class ClientDirectory {
@@ -33,9 +76,7 @@ export class ClientDirectory {
 
   async load(): Promise<ClientDirectoryFile> {
     try {
-      const parsed = JSON.parse(await readFile(this.filePath, 'utf8')) as ClientDirectoryFile;
-      if (parsed.schemaVersion !== 1 || !parsed.clients) throw new Error('Directorio de clientes incompatible.');
-      return parsed;
+      return decodeClientDirectory(JSON.parse(await readFile(this.filePath, 'utf8')));
     } catch (error: unknown) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         return { schemaVersion: 1, clients: {}, updatedAt: this.now().toISOString() };
@@ -68,13 +109,15 @@ export class ClientDirectory {
       if (existing && existing.value !== incoming.value) {
         const conflicts = record.conflicts[field] || [];
         if (!conflicts.some((candidate) => candidate.value === existing.value)) conflicts.push(existing);
+        if (!conflicts.some((candidate) => candidate.value === incoming.value)) conflicts.push(incoming);
         record.conflicts[field] = conflicts;
+        continue;
       }
       record.fields[field] = incoming;
     }
     document.clients[nif] = record;
     document.updatedAt = updatedAt;
-    await atomicWriteJson(this.filePath, document);
+    await atomicWriteJson(this.filePath, encodeClientDirectory(document));
     return { written: true, rejectedFields, record };
   }
 }

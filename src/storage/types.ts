@@ -8,12 +8,14 @@ export interface ClientRecord {
   nif: string;
   fields: Record<string, StoredField>;
   conflicts: Record<string, StoredField[]>;
+  shared?: Record<string, unknown>;
 }
 
 export interface ClientDirectoryFile {
   schemaVersion: 1;
   clients: Record<string, ClientRecord>;
   updatedAt: string;
+  shared?: Record<string, unknown>;
 }
 
 export interface VerifiedFieldInput {
