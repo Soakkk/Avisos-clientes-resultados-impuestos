@@ -21,7 +21,6 @@ import { useCaptureQueue } from './queue/useCaptureQueue';
 import type { CaptureItem } from './queue/types';
 import type { ArchivedNotice, GroupingOverride, NoticeState } from './storage/types';
 import type { UpdateStatus } from './update-status';
-import appIcon from './assets/app-icon.png';
 import { 
   Clipboard, 
   Upload, 
@@ -51,6 +50,8 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ShieldCheck, ShieldAlert, ShieldQuestion } from 'lucide-react';
+
+const appIcon = new URL('./assets/app-icon.png', import.meta.url).href;
 
 // Comprime la captura a una miniatura JPEG pequeña (~10-30 KB). En localStorage solo
 // se guarda esta miniatura: el PNG original en base64 ocupaba 1-3 MB por captura y
@@ -811,13 +812,14 @@ export default function App() {
 
   if (workspaceRedesignEnabled) {
     return (
-      <div className="workspace-shell h-screen min-h-[720px] overflow-hidden bg-[#f7f6f3] text-slate-800 flex flex-col">
+      <div className="workspace-shell h-screen min-h-[720px] overflow-hidden bg-[#F5F8FC] text-[#24384D] flex flex-col">
         <AnimatePresence>
           {loading && <LoaderOverlay step={loadingStep} takingLong={takingLong} />}
         </AnimatePresence>
 
         <div
-          className="h-11 flex-none bg-[#0B3159] text-white flex items-center gap-2 px-4 pr-40 select-none"
+          data-workspace-region="header"
+          className="h-11 flex-none bg-white text-[#24384D] border-b border-[#DCE5F0] flex items-center gap-2 px-4 pr-40 select-none"
           style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
         >
           <img src={appIcon} alt="" className="w-7 h-7 object-contain" />
@@ -931,7 +933,7 @@ export default function App() {
         <div className="flex-none bg-white border-b border-stone-200 px-5 py-2">
           <div className="mx-auto flex max-w-[1760px] items-center gap-3">
             <div className="min-w-0 flex-1">
-              <div className="truncate text-sm font-bold text-[#102A4C]">
+              <div className="truncate text-sm font-bold text-[#24384D]">
                 {selectedJoint ? selectedJoint.cliente_nombre : 'Nuevo aviso fiscal'}
               </div>
               <div className="text-[10px] text-stone-400">
@@ -957,7 +959,7 @@ export default function App() {
                 </button>
               </>
             )}
-            <button onClick={handleReadClipboard} className="flex items-center gap-2 rounded-lg bg-[#0B3159] px-4 py-2 text-xs font-bold text-white hover:bg-[#082745]">
+            <button onClick={handleReadClipboard} className="flex items-center gap-2 rounded-lg bg-[#326FA6] px-4 py-2 text-xs font-bold text-white hover:bg-[#285D8D]">
               <Clipboard className="w-4 h-4" />
               Pegar captura
               <kbd className="ml-1 rounded bg-white/10 px-1.5 py-0.5 text-[9px] font-normal">Ctrl+V</kbd>
@@ -966,7 +968,7 @@ export default function App() {
         </div>
 
         <main className="flex-1 min-h-0 p-3 lg:p-4 flex flex-col">
-          <div className="flex-none max-w-[1760px] w-full mx-auto mb-3">
+          <div data-workspace-region="queue" className="flex-none max-w-[1760px] w-full mx-auto mb-3">
             <CaptureQueue
               items={captureQueue.items}
               selectedJointId={selectedJoint?.id}
@@ -976,14 +978,15 @@ export default function App() {
           </div>
           <div className="flex-1 min-h-0 grid grid-cols-[minmax(390px,0.88fr)_minmax(520px,1.12fr)] gap-3 max-w-[1760px] w-full mx-auto">
             <section
+              data-workspace-region="input"
               onDragOver={handleDragOver}
               onDragLeave={handleDragLeave}
               onDrop={handleDrop}
-              className={'h-full min-h-0 rounded-xl border bg-white shadow-sm overflow-y-auto ' + (isDragOver ? 'border-[#0B3159] ring-2 ring-[#0B3159]/15' : 'border-stone-200')}
+              className={'h-full min-h-0 rounded-xl border bg-white shadow-sm overflow-y-auto ' + (isDragOver ? 'border-[#326FA6] ring-2 ring-[#326FA6]/15' : 'border-stone-200')}
             >
               <div className="px-5 py-4 border-b border-stone-200 flex items-center justify-between">
                 <div>
-                  <h2 className="flex items-center gap-2 text-lg font-bold text-[#102A4C]"><FileText className="h-5 w-5" />Datos extra&iacute;dos</h2>
+                  <h2 className="flex items-center gap-2 text-lg font-bold text-[#24384D]"><FileText className="h-5 w-5" />Datos extra&iacute;dos</h2>
                   <p className="text-[11px] text-stone-400 mt-0.5">Revise la informaci&oacute;n antes de enviarla</p>
                 </div>
                 {selectedJoint && (
@@ -1001,12 +1004,12 @@ export default function App() {
               </div>
 
               {!selectedJoint ? (
-                <div className="p-6 h-[555px] flex items-center justify-center">
+                <div className="p-6 h-full min-h-[220px] flex items-center justify-center">
                   <div className="max-w-sm w-full rounded-xl border-2 border-dashed border-stone-300 bg-stone-50/50 p-8 text-center">
-                    <Upload className="w-9 h-9 text-[#0B3159] mx-auto mb-3" />
+                    <Upload className="w-9 h-9 text-[#326FA6] mx-auto mb-3" />
                     <h3 className="font-bold text-slate-800 mb-1">Pegue una captura para empezar</h3>
                     <p className="text-xs text-stone-500 mb-5">Use Ctrl+V, arrastre una imagen o seleccione un archivo.</p>
-                    <button onClick={handleReadClipboard} className="w-full rounded-lg bg-[#0B3159] px-4 py-2.5 text-sm font-bold text-white">Pegar captura</button>
+                    <button onClick={handleReadClipboard} className="w-full rounded-lg bg-[#326FA6] px-4 py-2.5 text-sm font-bold text-white">Pegar captura</button>
                     <button onClick={() => document.getElementById('workspace-file-input')?.click()} className="mt-2 w-full rounded-lg border border-stone-300 bg-white px-4 py-2.5 text-xs font-semibold text-slate-700">Seleccionar imagen</button>
                   </div>
                 </div>
@@ -1060,10 +1063,10 @@ export default function App() {
                     <div className="flex items-center justify-between mb-3 gap-3">
                       <h3 className="font-bold text-slate-800">Impuestos incluidos &middot; {selectedJoint.notices.length}</h3>
                       <div className="flex items-center gap-2">
-                        <button disabled={selectedJoint.notices.length < 2} onClick={() => applyGrouping(createSplitOverride(selectedJoint))} className="text-xs font-semibold text-[#0B3159] hover:underline disabled:opacity-40">Separar</button>
-                        <button disabled={!mergeCandidate} onClick={() => mergeCandidate && applyGrouping(createMergeOverride(selectedJoint, mergeCandidate))} className="text-xs font-semibold text-[#0B3159] hover:underline disabled:opacity-40">Unir con siguiente</button>
-                        <button disabled={groupingOverrides.length === 0} onClick={handleUndoGrouping} className="text-xs font-semibold text-[#0B3159] hover:underline disabled:opacity-40">Deshacer</button>
-                        <button onClick={() => setEditingJointId(selectedJoint.id)} className="text-xs font-semibold text-[#0B3159] hover:underline">Editar</button>
+                        <button disabled={selectedJoint.notices.length < 2} onClick={() => applyGrouping(createSplitOverride(selectedJoint))} className="text-xs font-semibold text-[#326FA6] hover:underline disabled:opacity-40">Separar</button>
+                        <button disabled={!mergeCandidate} onClick={() => mergeCandidate && applyGrouping(createMergeOverride(selectedJoint, mergeCandidate))} className="text-xs font-semibold text-[#326FA6] hover:underline disabled:opacity-40">Unir con siguiente</button>
+                        <button disabled={groupingOverrides.length === 0} onClick={handleUndoGrouping} className="text-xs font-semibold text-[#326FA6] hover:underline disabled:opacity-40">Deshacer</button>
+                        <button onClick={() => setEditingJointId(selectedJoint.id)} className="text-xs font-semibold text-[#326FA6] hover:underline">Editar</button>
                       </div>
                     </div>
                     <div className="space-y-2">
@@ -1078,7 +1081,7 @@ export default function App() {
                             disabled={!tax.screenshotId && !tax.screenshotUrl}
                             title="Ver captura original"
                             aria-label={'Ver captura original del modelo ' + tax.modelo}
-                            className="flex h-8 w-8 items-center justify-center rounded-lg border border-stone-200 bg-white text-stone-500 hover:border-[#9DB3CF] hover:bg-[#EDF4FA] hover:text-[#0B3159] disabled:cursor-not-allowed disabled:opacity-30"
+                            className="flex h-8 w-8 items-center justify-center rounded-lg border border-stone-200 bg-white text-stone-500 hover:border-[#AFC3D6] hover:bg-[#EDF4FA] hover:text-[#326FA6] disabled:cursor-not-allowed disabled:opacity-30"
                           >
                             <ExternalLink className="h-3.5 w-3.5" />
                           </button>
@@ -1086,7 +1089,7 @@ export default function App() {
                       ))}
                     </div>
 
-                    <button onClick={() => document.getElementById('workspace-file-input')?.click()} className="mt-3 w-full rounded-lg border border-dashed border-stone-300 py-2.5 text-xs font-bold text-[#0B3159] hover:bg-stone-50">
+                    <button onClick={() => document.getElementById('workspace-file-input')?.click()} className="mt-3 w-full rounded-lg border border-dashed border-stone-300 py-2.5 text-xs font-bold text-[#326FA6] hover:bg-stone-50">
                       <Plus className="inline w-4 h-4 mr-1" /> A&ntilde;adir otra captura
                     </button>
                   </div>
@@ -1106,7 +1109,7 @@ export default function App() {
 
                   <div className="mt-6 flex items-center justify-between">
                     <button onClick={() => handleDeleteClientGroup(selectedJoint.id)} className="flex items-center gap-1.5 rounded-lg border border-rose-200 bg-white px-4 py-2.5 text-xs font-semibold text-rose-600 hover:bg-rose-50"><Trash2 className="h-4 w-4" />Descartar</button>
-                    <button onClick={() => setEditingJointId(selectedJoint.id)} className="rounded-lg bg-[#0B3159] px-6 py-2.5 text-sm font-bold text-white hover:bg-[#082745]">
+                    <button onClick={() => setEditingJointId(selectedJoint.id)} className="rounded-lg bg-[#326FA6] px-6 py-2.5 text-sm font-bold text-white hover:bg-[#285D8D]">
                       <Edit2 className="inline w-4 h-4 mr-1.5" /> Editar datos
                     </button>
                   </div>
@@ -1114,14 +1117,14 @@ export default function App() {
               )}
             </section>
 
-            <section className="h-full min-h-0 rounded-xl border border-stone-200 bg-white shadow-sm overflow-y-auto">
+            <section data-workspace-region="result" className="h-full min-h-0 rounded-xl border border-stone-200 bg-white shadow-sm overflow-y-auto">
               <div className="px-5 py-4 border-b border-stone-200">
-                <h2 className="flex items-center gap-2 text-lg font-bold text-[#102A4C]"><ImageIcon className="h-5 w-5" />Resultado para el cliente</h2>
+                <h2 className="flex items-center gap-2 text-lg font-bold text-[#24384D]"><ImageIcon className="h-5 w-5" />Resultado para el cliente</h2>
                 <p className="text-[11px] text-stone-400 mt-0.5">Copie el texto o la imagen lista para WhatsApp</p>
               </div>
 
               {!selectedJoint ? (
-                <div className="h-[555px] flex flex-col items-center justify-center text-center p-8">
+                <div className="h-full min-h-[220px] flex flex-col items-center justify-center text-center p-8">
                   <ImageIcon className="w-12 h-12 text-stone-300 mb-3" />
                   <h3 className="font-semibold text-slate-700">Todav&iacute;a no hay un aviso</h3>
                   <p className="text-xs text-stone-400 mt-1">La vista previa aparecer&aacute; cuando procese una captura.</p>
@@ -1129,8 +1132,8 @@ export default function App() {
               ) : (
                 <>
                   <div className="px-5 pt-3 border-b border-stone-200 flex gap-7">
-                    <button aria-selected={selectedTab === 'text'} onClick={() => setActiveTab((prev) => ({ ...prev, [selectedJoint.id]: 'text' }))} className={'flex items-center gap-1.5 rounded-t-lg border-b-2 px-3 pb-2.5 pt-1 text-sm font-semibold ' + (selectedTab === 'text' ? 'border-[#0B3159] bg-[#EDF4FA] text-[#0B3159]' : 'border-transparent text-stone-500 hover:bg-stone-50 hover:text-slate-700')}><MessageSquareText className="h-4 w-4" />Texto WhatsApp</button>
-                    <button aria-selected={selectedTab === 'image'} onClick={() => setActiveTab((prev) => ({ ...prev, [selectedJoint.id]: 'image' }))} className={'flex items-center gap-1.5 rounded-t-lg border-b-2 px-3 pb-2.5 pt-1 text-sm font-semibold ' + (selectedTab === 'image' ? 'border-[#0B3159] bg-[#EDF4FA] text-[#0B3159]' : 'border-transparent text-stone-500 hover:bg-stone-50 hover:text-slate-700')}><ImageIcon className="h-4 w-4" />Imagen</button>
+                    <button aria-selected={selectedTab === 'text'} onClick={() => setActiveTab((prev) => ({ ...prev, [selectedJoint.id]: 'text' }))} className={'flex items-center gap-1.5 rounded-t-lg border-b px-3 pb-2.5 pt-1 text-sm font-semibold ' + (selectedTab === 'text' ? 'border-[#326FA6] bg-[#EDF4FA] text-[#326FA6]' : 'border-transparent text-stone-500 hover:bg-stone-50 hover:text-slate-700')}><MessageSquareText className="h-4 w-4" />Texto WhatsApp</button>
+                    <button aria-selected={selectedTab === 'image'} onClick={() => setActiveTab((prev) => ({ ...prev, [selectedJoint.id]: 'image' }))} className={'flex items-center gap-1.5 rounded-t-lg border-b px-3 pb-2.5 pt-1 text-sm font-semibold ' + (selectedTab === 'image' ? 'border-[#326FA6] bg-[#EDF4FA] text-[#326FA6]' : 'border-transparent text-stone-500 hover:bg-stone-50 hover:text-slate-700')}><ImageIcon className="h-4 w-4" />Imagen</button>
                   </div>
 
                   {selectedTab === 'text' ? (
@@ -1152,15 +1155,15 @@ export default function App() {
                     </div>
                   ) : (
                     <div className="p-4">
-                      <div className={'mb-3 rounded-xl border px-4 py-3 ' + (selectedJoint.mostrarNotaAsesoria ? 'border-[#9DB3CF] bg-[#F7FAFD]' : 'border-stone-200 bg-stone-50')}>
+                      <div className={'mb-3 rounded-xl border px-4 py-3 ' + (selectedJoint.mostrarNotaAsesoria ? 'border-[#AFC3D6] bg-[#F7FAFD]' : 'border-stone-200 bg-stone-50')}>
                         <label className="flex items-center gap-3 cursor-pointer rounded-lg">
                           <input
                             type="checkbox"
                             checked={!!selectedJoint.mostrarNotaAsesoria}
                             onChange={(event) => handleAdvisoryNoteChange(selectedJoint.id, event.target.checked, selectedJoint.notaAsesoria || '')}
-                            className="w-4 h-4 accent-[#0B3159] cursor-pointer"
+                            className="w-4 h-4 accent-[#326FA6] cursor-pointer"
                           />
-                          <MessageSquareText className="w-4 h-4 text-[#0B3159]" />
+                          <MessageSquareText className="w-4 h-4 text-[#326FA6]" />
                           <span className="text-xs font-bold text-slate-700">A&ntilde;adir nota al pie del aviso</span>
                           {!selectedJoint.mostrarNotaAsesoria && <span className="ml-auto text-[10px] text-stone-400">Desactivada por defecto</span>}
                         </label>
@@ -1180,7 +1183,7 @@ export default function App() {
                                     type="button"
                                     aria-pressed={isSelected}
                                     onClick={() => handleAdvisoryNoteChange(selectedJoint.id, true, preset.text)}
-                                    className={'workspace-selectable relative min-h-20 rounded-lg border p-2.5 text-left ' + (isSelected ? 'border-[#0B3159] bg-[#EBF3FA] text-[#0B3159] ring-1 ring-[#0B3159]/20' : 'border-stone-200 bg-white text-slate-600')}
+                                    className={'workspace-selectable relative min-h-20 rounded-lg border p-2.5 text-left ' + (isSelected ? 'border-[#326FA6] bg-[#EBF3FA] text-[#326FA6] ring-1 ring-[#326FA6]/20' : 'border-stone-200 bg-white text-slate-600')}
                                   >
                                     <PresetIcon className="mb-2 h-4 w-4" />
                                     <span className="block pr-4 text-[10px] font-bold">{preset.label}</span>
@@ -1198,7 +1201,7 @@ export default function App() {
                                 maxLength={240}
                                 rows={2}
                                 placeholder="Escriba la nota que aparecer&aacute; en el pie del aviso."
-                                className="w-full resize-y rounded-lg border border-stone-200 bg-white px-3 py-2 pr-14 text-xs focus:border-[#0B3159] focus:outline-none focus:ring-2 focus:ring-[#0B3159]/10"
+                                className="w-full resize-y rounded-lg border border-stone-200 bg-white px-3 py-2 pr-14 text-xs focus:border-[#326FA6] focus:outline-none focus:ring-2 focus:ring-[#326FA6]/10"
                               />
                               <span className="absolute bottom-2 right-2 text-[9px] text-stone-400">{(selectedJoint.notaAsesoria || '').length}/240</span>
                             </div>
@@ -1225,10 +1228,10 @@ export default function App() {
             </section>
           </div>
 
-          <section className="flex-none max-w-[1760px] w-full mx-auto mt-3 rounded-xl border border-stone-200 bg-white shadow-sm overflow-hidden">
+          <section data-workspace-region="history" className="flex-none max-w-[1760px] w-full mx-auto mt-3 rounded-xl border border-stone-200 bg-white shadow-sm overflow-hidden">
             <button onClick={() => setHistoryExpanded(!historyExpanded)} className="w-full flex items-center justify-between px-4 py-3 text-left">
               <span className="flex items-center gap-2 text-sm font-bold text-slate-700">
-                <History className="w-4 h-4 text-[#0B3159]" />
+                <History className="w-4 h-4 text-[#326FA6]" />
                 Registro de hoy &middot; {groupedNotices.length} avisos
               </span>
               <span className="flex items-center gap-1 text-xs font-semibold text-stone-500">{historyExpanded ? 'Ocultar' : 'Mostrar'}{historyExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}</span>
@@ -1243,7 +1246,7 @@ export default function App() {
                     <button
                       key={joint.id} data-selected={isActive}
                       onClick={() => { setSelectedJointId(joint.id); setEditingJointId(null); }}
-                      className={'workspace-selectable min-w-[245px] rounded-lg border px-3 py-2 text-left ' + (isActive ? 'border-[#0B3159] bg-[#EDF4FA] ring-1 ring-[#0B3159]/20 shadow-sm' : 'border-stone-200 bg-white')}
+                      className={'workspace-selectable min-w-[245px] rounded-lg border px-3 py-2 text-left ' + (isActive ? 'border-[#326FA6] bg-[#EDF4FA] ring-1 ring-[#326FA6]/20 shadow-sm' : 'border-stone-200 bg-white')}
                     >
                       <div className="flex items-center gap-2">
                         <span className="text-[10px] text-stone-400">{timestamp ? new Date(timestamp).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }) : '--:--'}</span>
@@ -1276,7 +1279,7 @@ export default function App() {
             <div className="w-full max-w-lg rounded-2xl bg-white shadow-2xl border border-stone-200 p-6">
               <div className="flex items-center justify-between mb-5">
                 <div>
-                  <h2 className="text-lg font-bold text-[#102A4C]">Preferencias de la asesor&iacute;a</h2>
+                  <h2 className="text-lg font-bold text-[#24384D]">Preferencias de la asesor&iacute;a</h2>
                   <p className="text-xs text-stone-400">Datos generales y formato favorito</p>
                 </div>
                 <button onClick={() => setShowPreferences(false)} className="flex items-center gap-1.5 rounded-lg border border-stone-200 px-3 py-1.5 text-xs font-semibold hover:bg-stone-50"><X className="h-3.5 w-3.5" />Cerrar</button>
@@ -1295,7 +1298,7 @@ export default function App() {
                   <button
                     key={option.id}
                     onClick={() => handleCardFormatChange(option.id)}
-                    className={'rounded-lg border px-3 py-3 text-xs font-bold ' + (cardFormat === option.id ? 'bg-[#0B3159] border-[#0B3159] text-white' : 'border-stone-200 bg-stone-50 text-slate-600')}
+                    className={'rounded-lg border px-3 py-3 text-xs font-bold ' + (cardFormat === option.id ? 'bg-[#326FA6] border-[#326FA6] text-white' : 'border-stone-200 bg-stone-50 text-slate-600')}
                   >
                     {option.id}<span className="block mt-1 text-[10px] font-normal">{option.label}</span>
                   </button>

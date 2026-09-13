@@ -83,7 +83,7 @@ export const ApiKeySettings: React.FC<ApiKeySettingsProps> = ({ onConfigured }) 
         onClick={() => setIsOpen(true)}
         className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-all ${
           hasApiKey
-            ? 'bg-slate-50 text-slate-600 hover:bg-slate-100 border-slate-200'
+            ? 'bg-[#F5F8FC] text-[#5D7084] hover:bg-[#EDF4FA] border-[#DCE5F0]'
             : 'bg-amber-50 text-amber-700 hover:bg-amber-100 border-amber-200'
         }`}
         id="btn-open-settings"
@@ -94,10 +94,10 @@ export const ApiKeySettings: React.FC<ApiKeySettingsProps> = ({ onConfigured }) 
 
       {isOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
-          <div className="bg-white rounded-2xl shadow-xl max-w-md w-full p-6">
+          <div className="bg-white rounded-2xl shadow-xl max-w-md w-full p-6 border border-[#DCE5F0]">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
-                <div className="w-9 h-9 rounded-xl bg-slate-900 flex items-center justify-center text-white">
+                <div className="w-9 h-9 rounded-xl bg-[#326FA6] flex items-center justify-center text-white">
                   <KeyRound className="w-4.5 h-4.5" />
                 </div>
                 <h2 className="font-display font-bold text-sm text-slate-900">
@@ -160,7 +160,7 @@ export const ApiKeySettings: React.FC<ApiKeySettingsProps> = ({ onConfigured }) 
               <button
                 onClick={handleSave}
                 disabled={saving}
-                className="flex-1 flex items-center justify-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-slate-800 hover:bg-slate-900 rounded-lg transition-all disabled:opacity-50"
+                className="flex-1 flex items-center justify-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-[#326FA6] hover:bg-[#285D8D] rounded-lg transition-all disabled:opacity-50"
                 id="btn-save-api-key"
               >
                 {saved ? (
