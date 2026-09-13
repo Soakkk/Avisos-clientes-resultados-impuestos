@@ -861,7 +861,7 @@ export default function App() {
       <div className="workspace-shell h-screen min-h-[720px] overflow-hidden bg-[#F5F8FC] text-[#24384D] flex flex-col">
         {(storageError || captureQueue.storageError) && <div role="alert" className="flex-none border border-red-300 bg-red-50 px-4 py-2 text-sm text-red-900">No se puede guardar el trabajo: {storageError || captureQueue.storageError}. La bandeja está detenida. Conserve la aplicación abierta hasta recuperar el almacenamiento.</div>}
         <AnimatePresence>
-          {loading && <LoaderOverlay step={loadingStep} takingLong={takingLong} />}
+          {loading && <LoaderOverlay step={loadingStep} takingLong={takingLong} inline />}
         </AnimatePresence>
 
         <div

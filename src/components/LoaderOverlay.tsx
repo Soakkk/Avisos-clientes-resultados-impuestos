@@ -5,6 +5,7 @@ import { motion } from 'motion/react';
 interface LoaderOverlayProps {
   step: number;
   takingLong?: boolean;
+  inline?: boolean;
 }
 
 const STEPS = [
@@ -18,7 +19,13 @@ const STEPS = [
   "Generando aviso personalizado..."
 ];
 
-export const LoaderOverlay: React.FC<LoaderOverlayProps> = ({ step, takingLong }) => {
+export const LoaderOverlay: React.FC<LoaderOverlayProps> = ({ step, takingLong, inline = false }) => {
+  if (inline) return (
+    <div role="status" aria-live="polite" className="flex flex-none items-center gap-3 border-b border-[#DCE5F0] bg-white px-4 py-2 text-sm text-[#24384D]">
+      <Loader2 className="h-4 w-4 flex-none animate-spin text-[#326FA6]" aria-hidden="true" />
+      <span>{STEPS[Math.min(step, STEPS.length - 1)]}{takingLong && ' Puede seguir revisando los avisos anteriores.'}</span>
+    </div>
+  );
   return (
     <motion.div 
       initial={{ opacity: 0 }}
