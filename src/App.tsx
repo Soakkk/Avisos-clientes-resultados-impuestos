@@ -21,6 +21,7 @@ import { useCaptureQueue } from './queue/useCaptureQueue';
 import type { CaptureItem } from './queue/types';
 import type { ArchivedNotice, GroupingOverride, NoticeState } from './storage/types';
 import type { UpdateStatus } from './update-status';
+import type { EditorDraft } from './editorDraft';
 import { 
   Clipboard, 
   Upload, 
@@ -194,12 +195,20 @@ export default function App() {
   const [groupingOverrides, setGroupingOverrides] = useState<GroupingOverride[]>([]);
   const [storageReady, setStorageReady] = useState(false);
   const [storageError, setStorageError] = useState('');
+  const [hydration] = useState(() => {
+    let resolve!: () => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<void>((ok, fail) => { resolve = ok; reject = fail; });
+    void promise.catch(() => {});
+    return { promise, resolve, reject };
+  });
   const rawNoticesRef = useRef<TaxNotice[]>([]);
   const queueItemsRef = useRef<CaptureItem[]>([]);
   const archivedNoticesRef = useRef<ArchivedNotice[]>([]);
   const groupingOverridesRef = useRef<GroupingOverride[]>([]);
   const selectedJointIdRef = useRef<string | null>(null);
   const workspaceWrites = useRef<Promise<unknown>>(Promise.resolve());
+  const editorDraftRef = useRef<EditorDraft | null>(null);
   const processImageFileRef = useRef<(file: File, persistedFileId?: string) => Promise<{ jointId: string }>>();
   const [loading, setLoading] = useState(false);
   const [loadingStep, setLoadingStep] = useState(0);
@@ -232,6 +241,7 @@ export default function App() {
       archivedNotices: archivedNoticesRef.current,
       groupingOverrides: groupingOverridesRef.current,
       selectedJointId: selectedJointIdRef.current,
+      draft: editorDraftRef.current,
       updatedAt: new Date().toISOString(),
     };
     const body = JSON.stringify(state);
@@ -253,12 +263,23 @@ export default function App() {
     }
   }, []);
 
+  const rememberDraft = useCallback((draft: EditorDraft) => {
+    editorDraftRef.current = draft;
+    if (storageReady) void persistWorkspace().catch(() => {});
+  }, [persistWorkspace, storageReady]);
+
+  const cancelEditing = () => {
+    editorDraftRef.current = null;
+    setEditingJointId(null);
+    void persistWorkspace().catch(() => {});
+  };
+
   useEffect(() => {
     const updates = window.updates;
     if (!updates) return;
     const stopStatus = updates.onStatus(setUpdateStatus);
     const stopSaveRequest = updates.onSaveRequested(() => {
-      void persistWorkspace()
+      void hydration.promise.then(() => persistWorkspace())
         .then(() => updates.stateSaved(true))
         .catch((error) => updates.stateSaved(false, error instanceof Error ? error.message : String(error)));
     });
@@ -266,7 +287,7 @@ export default function App() {
       stopStatus();
       stopSaveRequest();
     };
-  }, [persistWorkspace]);
+  }, [hydration, persistWorkspace]);
 
   // Versión instalada (la expone el servidor en /api/health)
   useEffect(() => {
@@ -298,10 +319,16 @@ export default function App() {
         groupingOverridesRef.current = Array.isArray(stored.groupingOverrides) ? stored.groupingOverrides : [];
         setArchivedNotices(archivedNoticesRef.current);
         setGroupingOverrides(groupingOverridesRef.current);
+        const draft = stored.draft as EditorDraft | undefined;
+        if (draft?.jointId && Array.isArray(draft.taxes)) {
+          editorDraftRef.current = draft;
+          setEditingJointId(draft.jointId);
+        }
         if (stored.selectedJointId) {
           selectedJointIdRef.current = stored.selectedJointId;
           setSelectedJointId(stored.selectedJointId);
         }
+        if (draft?.jointId) setSelectedJointId(draft.jointId);
         const diskNotices = Array.isArray(stored.activeNotices) ? stored.activeNotices as TaxNotice[] : [];
         let source = diskNotices;
         const savedNotices = localStorage.getItem('aeat_raw_notices');
@@ -337,12 +364,19 @@ export default function App() {
           ).then((migrated) => saveNoticesToLocal(migrated));
         }
         }
-        captureQueue.hydrate(Array.isArray(stored.queue) ? stored.queue as CaptureItem[] : []);
-        await persistWorkspace(stored.queue as CaptureItem[] || [], rawNoticesRef.current);
+        const recoveredQueue = (Array.isArray(stored.queue) ? stored.queue as CaptureItem[] : []).map((item) => {
+          const completed = rawNoticesRef.current.find(notice => notice.screenshotId === item.fileId);
+          return completed ? { ...item, status: 'review' as const, jointId: normalizeNifKey(completed.cliente_nif, completed.cliente_nombre) } : item;
+        });
+        captureQueue.hydrate(recoveredQueue);
+        queueItemsRef.current = recoveredQueue;
+        await persistWorkspace(recoveredQueue, rawNoticesRef.current);
         localStorage.removeItem('aeat_raw_notices');
         setStorageReady(true);
+        hydration.resolve();
       })
       .catch((error) => {
+        hydration.reject(error);
         console.error('Failed to load saved notices', error);
         alert('No se ha podido abrir el almacenamiento local. Reinicie la aplicación antes de añadir más capturas.');
       });
@@ -693,6 +727,7 @@ export default function App() {
     const addedTaxes = updatedJoint.notices.filter(n => !existingIds.includes(n.id)).map(applyEdit);
 
     const finalNotices = [...updatedNotices, ...addedTaxes];
+    editorDraftRef.current = null;
     saveNoticesToLocal(finalNotices);
     setEditingJointId(null);
   };
@@ -1027,9 +1062,11 @@ export default function App() {
                 <div className="p-4">
                   <NoticeEditor
                     key={selectedJoint.id}
+                    initialDraft={editorDraftRef.current}
+                    onDraftChange={rememberDraft}
                     notice={selectedJoint}
                     onSave={handleEditSave}
-                    onCancel={() => setEditingJointId(null)}
+                    onCancel={cancelEditing}
                   />
                 </div>
               ) : (
@@ -1708,9 +1745,12 @@ export default function App() {
                     {isEditing ? (
                       <div className="p-5 border-b border-slate-50 bg-slate-50/10">
                         <NoticeEditor
+                          key={joint.id}
+                          initialDraft={editorDraftRef.current}
+                          onDraftChange={rememberDraft}
                           notice={joint}
                           onSave={handleEditSave}
-                          onCancel={() => setEditingJointId(null)}
+                          onCancel={cancelEditing}
                         />
                       </div>
                     ) : null}

@@ -8,6 +8,8 @@ let expressAppProcess;
 let updateTimer;
 let updateReady = false;
 let pendingStateSave = null;
+let exitApproved = false;
+let exitInProgress = null;
 
 // Function to check if the local server is up and running
 function checkServerReady(url, callback) {
@@ -97,6 +99,11 @@ function createWindow() {
     });
   }, 300);
 
+  mainWindow.on('close', (event) => {
+    if (exitApproved) return;
+    event.preventDefault();
+    void prepareExit(mainWindow.webContents, updateReady);
+  });
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
@@ -106,7 +113,7 @@ function createWindow() {
 // Descarga silenciosa, estado visible en la interfaz e instalación solo cuando
 // el workspace ya ha confirmado su persistencia (o al cerrar normalmente).
 autoUpdater.autoDownload = true;
-autoUpdater.autoInstallOnAppQuit = true;
+autoUpdater.autoInstallOnAppQuit = false;
 autoUpdater.allowPrerelease = false;
 autoUpdater.allowDowngrade = false;
 
@@ -159,20 +166,42 @@ ipcMain.on('state-saved', (event, result) => {
   else pending.reject(new Error(result?.message || 'No se pudo guardar el estado.'));
 });
 
-ipcMain.handle('restart-and-install', async (event) => {
-  if (!updateReady) return false;
+function prepareExit(sender, install) {
+  if (exitInProgress) return exitInProgress;
+  exitInProgress = (async () => {
+  try {
   const saved = await new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       pendingStateSave = null;
       reject(new Error('La aplicación no confirmó el guardado a tiempo.'));
     }, 15_000);
-    pendingStateSave = { sender: event.sender, resolve, reject, timer };
-    event.sender.send('save-state-before-update');
+    pendingStateSave = { sender, resolve, reject, timer };
+    sender.send('save-state-before-update');
   });
   if (!saved) return false;
-  sendUpdateStatus({ status: 'installing', workspaceSaved: true });
-  autoUpdater.quitAndInstall(false, true);
+  exitApproved = true;
+  if (install) {
+    sendUpdateStatus({ status: 'installing', workspaceSaved: true });
+    autoUpdater.quitAndInstall(false, true);
+  } else app.quit();
   return true;
+  } catch (error) {
+    sendUpdateStatus({ status: 'error', message: String(error?.message || error), recoverable: true, workspaceSaved: false });
+    return false;
+  } finally { exitInProgress = null; }
+  })();
+  return exitInProgress;
+}
+
+ipcMain.handle('restart-and-install', (event) => {
+  if (!updateReady) return false;
+  return prepareExit(event.sender, true);
+});
+
+app.on('before-quit', (event) => {
+  if (exitApproved || !mainWindow || mainWindow.isDestroyed()) return;
+  event.preventDefault();
+  void prepareExit(mainWindow.webContents, updateReady);
 });
 
 // Start local Express server first, then boot the Electron window
