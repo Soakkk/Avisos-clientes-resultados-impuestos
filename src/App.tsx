@@ -6,6 +6,16 @@ import { NoticeEditor } from './components/NoticeEditor';
 import { NoticeCard, CardFormat } from './components/NoticeCard';
 import { ApiKeySettings } from './components/ApiKeySettings';
 import { buildWhatsAppText } from './whatsapp';
+import { toBlob } from 'html-to-image';
+import { CaptureQueue } from './components/CaptureQueue';
+import { NoticeHistory } from './components/NoticeHistory';
+import {
+  completeAndContinue,
+  createMergeOverride,
+  createSplitOverride,
+  groupNotices,
+  undoGroupingOverride,
+} from './history';
 import { TemporaryCaptureError } from './queue/reducer';
 import { useCaptureQueue } from './queue/useCaptureQueue';
 import type { CaptureItem } from './queue/types';
@@ -178,6 +188,8 @@ function parseFechaEspanola(valor: unknown): string | undefined {
 
 export default function App() {
   const [rawNotices, setRawNotices] = useState<TaxNotice[]>([]);
+  const [archivedNotices, setArchivedNotices] = useState<ArchivedNotice[]>([]);
+  const [groupingOverrides, setGroupingOverrides] = useState<GroupingOverride[]>([]);
   const [storageReady, setStorageReady] = useState(false);
   const rawNoticesRef = useRef<TaxNotice[]>([]);
   const queueItemsRef = useRef<CaptureItem[]>([]);
@@ -253,6 +265,8 @@ export default function App() {
       .then(async (stored) => {
         archivedNoticesRef.current = Array.isArray(stored.archivedNotices) ? stored.archivedNotices : [];
         groupingOverridesRef.current = Array.isArray(stored.groupingOverrides) ? stored.groupingOverrides : [];
+        setArchivedNotices(archivedNoticesRef.current);
+        setGroupingOverrides(groupingOverridesRef.current);
         if (stored.selectedJointId) {
           selectedJointIdRef.current = stored.selectedJointId;
           setSelectedJointId(stored.selectedJointId);
@@ -543,52 +557,14 @@ export default function App() {
     }
   };
 
-  // Group notice list by Client
-  const getGroupedNotices = (notices: TaxNotice[]): JointNotice[] => {
-    const map = new Map<string, TaxNotice[]>();
-    notices.forEach((n) => {
-      // Clave normalizada (sin espacios/guiones/puntos): si Gemini lee el NIF con un
-      // espacio de más en la segunda captura, el cliente seguirá agrupándose junto.
-      const key = normalizeNifKey(n.cliente_nif, n.cliente_nombre);
-      if (!map.has(key)) {
-        map.set(key, []);
-      }
-      map.get(key)!.push(n);
-    });
-
-    const jointNotices: JointNotice[] = [];
-    map.forEach((taxes, key) => {
-      // Sort oldest to newest timestamp
-      taxes.sort((a, b) => b.timestamp - a.timestamp);
-      
-      const first = taxes[0];
-      const total_importe = taxes.reduce((sum, tax) => sum + tax.importe, 0);
-      const iban = taxes.find((tax) => tax.iban)?.iban || '';
-      const todosDomiciliados = taxes.every((tax) => tax.tipo_resultado === 'Domiciliación');
-      const noteSource = taxes.find((tax) => tax.mostrarNotaAsesoria)
-        || taxes.find((tax) => tax.notaAsesoria?.trim());
-
-
-      jointNotices.push({
-        id: key,
-        cliente_nombre: first.cliente_nombre,
-        cliente_nif: first.cliente_nif,
-        notices: taxes,
-        total_importe,
-        iban,
-        todosDomiciliados,
-        notaAsesoria: noteSource?.notaAsesoria || '',
-        mostrarNotaAsesoria: noteSource?.mostrarNotaAsesoria || false
-      });
-    });
-
-    return jointNotices;
-  };
-
-  const groupedNotices = getGroupedNotices(rawNotices);
+  const groupedNotices = groupNotices(rawNotices, groupingOverrides);
   const selectedJoint = groupedNotices.find((joint) => joint.id === selectedJointId)
     || groupedNotices[0]
     || null;
+  const selectedJointIndex = selectedJoint ? groupedNotices.findIndex((joint) => joint.id === selectedJoint.id) : -1;
+  const mergeCandidate = groupedNotices.length > 1 && selectedJointIndex >= 0
+    ? groupedNotices[(selectedJointIndex + 1) % groupedNotices.length]
+    : null;
   const selectedTab: 'text' | 'image' = selectedJoint
     ? (activeTab[selectedJoint.id] || 'image')
     : 'image';
@@ -633,8 +609,9 @@ export default function App() {
 
   const handleAdvisoryNoteChange = (jointId: string, enabled: boolean, text: string) => {
     const cleanText = text.slice(0, 240);
+    const noticeIds = new Set(groupNotices(rawNotices, groupingOverrides).find((joint) => joint.id === jointId)?.notices.map((notice) => notice.id) || []);
     const updated = rawNotices.map((notice) =>
-      normalizeNifKey(notice.cliente_nif, notice.cliente_nombre) === jointId
+      noticeIds.has(notice.id)
         ? { ...notice, mostrarNotaAsesoria: enabled, notaAsesoria: cleanText }
         : notice
     );
@@ -642,9 +619,9 @@ export default function App() {
   };
   const generateWhatsAppText = (joint: JointNotice): string => buildWhatsAppText(joint, { agencyName, signatureText });
 
-  const copyWhatsAppText = (joint: JointNotice) => {
+  const copyWhatsAppText = async (joint: JointNotice) => {
     const text = generateWhatsAppText(joint);
-    navigator.clipboard.writeText(text);
+    await navigator.clipboard.writeText(text);
     setCopiedTextId(joint.id);
     setTimeout(() => setCopiedTextId(null), 2000);
   };
@@ -667,7 +644,8 @@ export default function App() {
     // Los impuestos quitados en el editor se eliminan de verdad (antes se
     // quedaban en la lista al guardar) y se borra su captura del disco.
     const editedIds = new Set(updatedJoint.notices.map((n) => n.id));
-    const belongsToGroup = (n: TaxNotice) => normalizeNifKey(n.cliente_nif, n.cliente_nombre) === updatedJoint.id;
+    const originalIds = new Set(groupNotices(rawNotices, groupingOverrides).find((joint) => joint.id === updatedJoint.id)?.notices.map((notice) => notice.id) || []);
+    const belongsToGroup = (n: TaxNotice) => originalIds.has(n.id);
     rawNotices
       .filter((n) => belongsToGroup(n) && !editedIds.has(n.id))
       .forEach((n) => deleteCaptureFromDisk(n.screenshotId));
@@ -690,9 +668,10 @@ export default function App() {
 
   const handleDeleteClientGroup = (jointId: string) => {
     if (confirm("¿Está seguro de que desea eliminar todas las declaraciones de este cliente?")) {
-      const removed = rawNotices.filter((n) => normalizeNifKey(n.cliente_nif, n.cliente_nombre) === jointId);
+      const noticeIds = new Set(groupNotices(rawNotices, groupingOverrides).find((joint) => joint.id === jointId)?.notices.map((notice) => notice.id) || []);
+      const removed = rawNotices.filter((notice) => noticeIds.has(notice.id));
       removed.forEach((n) => deleteCaptureFromDisk(n.screenshotId));
-      const updated = rawNotices.filter((n) => normalizeNifKey(n.cliente_nif, n.cliente_nombre) !== jointId);
+      const updated = rawNotices.filter((notice) => !noticeIds.has(notice.id));
       saveNoticesToLocal(updated);
     }
   };
@@ -702,6 +681,92 @@ export default function App() {
       rawNotices.forEach((n) => deleteCaptureFromDisk(n.screenshotId));
       saveNoticesToLocal([]);
     }
+  };
+
+  const copyNoticeImage = async (joint: JointNotice) => {
+    const surface = document.querySelector(`[data-export-surface="${CSS.escape(joint.id)}"]`);
+    const card = surface?.firstElementChild?.firstElementChild as HTMLElement | null;
+    if (!card) throw new Error('No se encuentra la ficha para exportar.');
+    const options = { pixelRatio: 2, backgroundColor: '#FBF9F5', cacheBust: true, skipFonts: true };
+    await toBlob(card, options);
+    const blob = await toBlob(card, options);
+    if (!blob) throw new Error('No se pudo generar la imagen.');
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+  };
+
+  const archiveJoint = async (joint: JointNotice) => {
+    const archive: ArchivedNotice = {
+      id: `${joint.id}:${Math.max(...joint.notices.map((notice) => notice.timestamp))}`,
+      archivedAt: new Date().toISOString(),
+      cliente_nombre: joint.cliente_nombre,
+      cliente_nif: joint.cliente_nif,
+      models: Array.from(new Set(joint.notices.map((notice) => notice.modelo))),
+      periods: Array.from(new Set(joint.notices.map((notice) => notice.periodo))),
+      noticeIds: joint.notices.map((notice) => notice.id),
+      captureIds: joint.notices.flatMap((notice) => notice.screenshotId ? [notice.screenshotId] : []),
+      snapshot: joint,
+    };
+    const response = await fetch('/api/notices/archive', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(archive),
+    });
+    if (!response.ok) throw new Error('No se pudo archivar el aviso.');
+    if (!archivedNoticesRef.current.some((item) => item.id === archive.id)) {
+      archivedNoticesRef.current = [archive, ...archivedNoticesRef.current];
+      setArchivedNotices(archivedNoticesRef.current);
+    }
+    const removedIds = new Set(joint.notices.map((notice) => notice.id));
+    const active = rawNoticesRef.current.filter((notice) => !removedIds.has(notice.id));
+    rawNoticesRef.current = active;
+    setRawNotices(active);
+    const remainingQueue = queueItemsRef.current.filter((item) => item.jointId !== joint.id);
+    queueItemsRef.current = remainingQueue;
+    captureQueue.hydrate(remainingQueue);
+    await persistWorkspace(remainingQueue, active);
+  };
+
+  const handleCompleteAndContinue = async (joint: JointNotice, mode: 'text' | 'image') => {
+    try {
+      const next = await completeAndContinue({
+        joint,
+        mode,
+        exportText: copyWhatsAppText,
+        exportImage: copyNoticeImage,
+        archive: archiveJoint,
+        pendingJointIds: groupedNotices.map((item) => item.id),
+      });
+      setSelectedJointId(next);
+    } catch (error) {
+      console.error(error);
+      alert(`No se pudo completar el aviso: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+  const applyGrouping = (override: GroupingOverride) => {
+    const next = [...groupingOverridesRef.current, override];
+    groupingOverridesRef.current = next;
+    setGroupingOverrides(next);
+    void persistWorkspace();
+  };
+
+  const handleUndoGrouping = () => {
+    const next = undoGroupingOverride(groupingOverridesRef.current);
+    groupingOverridesRef.current = next;
+    setGroupingOverrides(next);
+    void persistWorkspace();
+  };
+
+  const handleReopen = (archive: ArchivedNotice) => {
+    const snapshot = archive.snapshot as JointNotice;
+    const existing = new Set(rawNoticesRef.current.map((notice) => notice.id));
+    const active = [...snapshot.notices.filter((notice) => !existing.has(notice.id)), ...rawNoticesRef.current];
+    const history = archivedNoticesRef.current.filter((item) => item.id !== archive.id);
+    rawNoticesRef.current = active;
+    archivedNoticesRef.current = history;
+    setRawNotices(active);
+    setArchivedNotices(history);
+    selectedJointIdRef.current = snapshot.id;
+    setSelectedJointId(snapshot.id);
+    void persistWorkspace(queueItemsRef.current, active);
   };
 
   // Handle manual file drag & drop events
@@ -868,6 +933,14 @@ export default function App() {
         </div>
 
         <main className="flex-1 min-h-0 p-3 lg:p-4 flex flex-col">
+          <div className="flex-none max-w-[1760px] w-full mx-auto mb-3">
+            <CaptureQueue
+              items={captureQueue.items}
+              selectedJointId={selectedJoint?.id}
+              onRetry={captureQueue.retry}
+              onSelect={(jointId) => setSelectedJointId(jointId)}
+            />
+          </div>
           <div className="flex-1 min-h-0 grid grid-cols-[minmax(390px,0.88fr)_minmax(520px,1.12fr)] gap-3 max-w-[1760px] w-full mx-auto">
             <section
               onDragOver={handleDragOver}
@@ -951,9 +1024,14 @@ export default function App() {
                   </div>
 
                   <div className="mt-5 border-t border-stone-200 pt-4">
-                    <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center justify-between mb-3 gap-3">
                       <h3 className="font-bold text-slate-800">Impuestos incluidos &middot; {selectedJoint.notices.length}</h3>
-                      <button onClick={() => setEditingJointId(selectedJoint.id)} className="text-xs font-semibold text-[#0B3159] hover:underline">Editar</button>
+                      <div className="flex items-center gap-2">
+                        <button disabled={selectedJoint.notices.length < 2} onClick={() => applyGrouping(createSplitOverride(selectedJoint))} className="text-xs font-semibold text-[#0B3159] hover:underline disabled:opacity-40">Separar</button>
+                        <button disabled={!mergeCandidate} onClick={() => mergeCandidate && applyGrouping(createMergeOverride(selectedJoint, mergeCandidate))} className="text-xs font-semibold text-[#0B3159] hover:underline disabled:opacity-40">Unir con siguiente</button>
+                        <button disabled={groupingOverrides.length === 0} onClick={handleUndoGrouping} className="text-xs font-semibold text-[#0B3159] hover:underline disabled:opacity-40">Deshacer</button>
+                        <button onClick={() => setEditingJointId(selectedJoint.id)} className="text-xs font-semibold text-[#0B3159] hover:underline">Editar</button>
+                      </div>
                     </div>
                     <div className="space-y-2">
                       {selectedJoint.notices.map((tax, index) => (
@@ -1031,6 +1109,13 @@ export default function App() {
                         </button>
                         <pre className="whitespace-pre-wrap font-mono text-[13px] leading-relaxed text-slate-700">{generateWhatsAppText(selectedJoint)}</pre>
                       </div>
+                      <button
+                        type="button"
+                        onClick={() => void handleCompleteAndContinue(selectedJoint, 'text')}
+                        className="mt-3 w-full rounded-lg bg-[#19724E] px-4 py-2.5 text-sm font-bold text-white"
+                      >
+                        Copiar, archivar y continuar
+                      </button>
                     </div>
                   ) : (
                     <div className="p-4">
@@ -1089,8 +1174,17 @@ export default function App() {
                       </div>
 
                       <div className="rounded-xl border border-stone-100 bg-[#fbfaf8] px-3 py-4 overflow-x-auto flex justify-center">
-                        <NoticeCard notice={selectedJoint} format={cardFormat} />
+                        <div data-export-surface={selectedJoint.id}>
+                          <NoticeCard notice={selectedJoint} format={cardFormat} />
+                        </div>
                       </div>
+                      <button
+                        type="button"
+                        onClick={() => void handleCompleteAndContinue(selectedJoint, 'image')}
+                        className="mt-3 w-full rounded-lg bg-[#19724E] px-4 py-2.5 text-sm font-bold text-white"
+                      >
+                        Copiar, archivar y continuar
+                      </button>
                     </div>
                   )}
                 </>
@@ -1132,6 +1226,16 @@ export default function App() {
               </div>
             )}
           </section>
+
+          {historyExpanded && (
+            <div className="flex-none max-w-[1760px] w-full mx-auto mt-3">
+              <NoticeHistory
+                items={archivedNotices}
+                onReopen={handleReopen}
+                onViewCapture={(captureId) => window.open(`/api/capturas/${captureId}`, '_blank')}
+              />
+            </div>
+          )}
         </main>
 
         {showPreferences && (

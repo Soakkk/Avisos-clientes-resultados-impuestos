@@ -19,6 +19,7 @@ export type CaptureQueueAction =
   | { type: 'enqueue'; items: CaptureItem[] }
   | { type: 'start'; id: string }
   | { type: 'complete'; id: string; jointId?: string }
+  | { type: 'schedule-retry'; id: string; error: string }
   | { type: 'retry'; id: string; error: string }
   | { type: 'review'; id: string; error: string }
   | { type: 'fail'; id: string; error: string }

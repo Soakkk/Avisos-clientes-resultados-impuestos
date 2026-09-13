@@ -83,3 +83,10 @@ test('los errores de datos pasan a revisión sin detener la bandeja', async () =
   assert.deepEqual(final.map((entry) => entry.status), ['review', 'review']);
   assert.equal(final[0].error, 'NIF ilegible');
 });
+
+test('reintentar manualmente reinicia el contador agotado de la bandeja', () => {
+  const failed = { ...item('1'), status: 'failed' as const, attempts: 4, error: 'Sin conexión' };
+  const state = queueReducer({ items: [failed] }, { type: 'retry', id: '1', error: '' });
+  assert.equal(state.items[0].status, 'pending');
+  assert.equal(state.items[0].attempts, 0);
+});

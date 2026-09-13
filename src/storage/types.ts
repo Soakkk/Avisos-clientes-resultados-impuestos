@@ -41,6 +41,7 @@ export interface GroupingOverride {
   kind: 'merge' | 'split';
   noticeIds: string[];
   groupId: string;
+  assignments?: Record<string, string>;
   createdAt: string;
 }
 

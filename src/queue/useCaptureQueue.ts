@@ -41,7 +41,7 @@ export function useCaptureQueue({
         const message = errorMessage(error);
         if (isTemporaryCaptureError(error) && attempt <= RETRY_DELAYS.length) {
           await new Promise<void>((resolve) => setTimeout(resolve, RETRY_DELAYS[attempt - 1]));
-          dispatch({ type: 'retry', id: next.id, error: message });
+          dispatch({ type: 'schedule-retry', id: next.id, error: message });
         } else if (isTemporaryCaptureError(error)) {
           dispatch({ type: 'fail', id: next.id, error: message });
         } else {

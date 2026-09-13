@@ -41,10 +41,16 @@ export function queueReducer(state: CaptureQueueState, action: CaptureQueueActio
           ? { ...item, status: 'review', jointId: action.jointId, error: undefined }
           : item),
       };
-    case 'retry':
+    case 'schedule-retry':
       return {
         items: state.items.map((item) => item.id === action.id
           ? { ...item, status: 'pending', error: action.error }
+          : item),
+      };
+    case 'retry':
+      return {
+        items: state.items.map((item) => item.id === action.id
+          ? { ...item, status: 'pending', attempts: 0, error: action.error }
           : item),
       };
     case 'review':
@@ -91,7 +97,7 @@ export async function runCaptureQueue(
     } catch (error) {
       const message = errorMessage(error);
       if (isTemporaryCaptureError(error) && processing.attempts <= RETRY_DELAYS.length) {
-        await apply({ type: 'retry', id: processing.id, error: message });
+        await apply({ type: 'schedule-retry', id: processing.id, error: message });
         await sleep(RETRY_DELAYS[processing.attempts - 1]);
       } else if (isTemporaryCaptureError(error)) {
         await apply({ type: 'fail', id: processing.id, error: message });
