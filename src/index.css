@@ -145,6 +145,7 @@ body {
 
 .queue-list > li {
   display: flex;
+  flex-wrap: wrap;
   flex: 0 0 250px;
   align-items: center;
   min-width: 0;
@@ -163,7 +164,7 @@ body {
 .queue-item-main {
   display: grid;
   grid-template-columns: 28px minmax(0, 1fr) auto;
-  flex: 1;
+  flex: 1 0 100%;
   align-items: center;
   min-width: 0;
   padding: 8px;
@@ -237,6 +238,9 @@ body {
 
 .icon-action {
   display: inline-flex;
+  flex: 1;
+  justify-content: center;
+  min-height: 30px;
   align-self: stretch;
   align-items: center;
   border-left: 1px solid #E8CDD0;

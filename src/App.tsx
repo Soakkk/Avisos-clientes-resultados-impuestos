@@ -859,11 +859,6 @@ export default function App() {
   if (workspaceRedesignEnabled) {
     return (
       <div className="workspace-shell h-screen min-h-[720px] overflow-hidden bg-[#F5F8FC] text-[#24384D] flex flex-col">
-        {(storageError || captureQueue.storageError) && <div role="alert" className="flex-none border border-red-300 bg-red-50 px-4 py-2 text-sm text-red-900">No se puede guardar el trabajo: {storageError || captureQueue.storageError}. La bandeja está detenida. Conserve la aplicación abierta hasta recuperar el almacenamiento.</div>}
-        <AnimatePresence>
-          {loading && <LoaderOverlay step={loadingStep} takingLong={takingLong} inline />}
-        </AnimatePresence>
-
         <div
           data-workspace-region="header"
           className="h-11 flex-none bg-white text-[#24384D] border-b border-[#DCE5F0] flex items-center gap-2 px-4 pr-40 select-none"
@@ -1016,6 +1011,10 @@ export default function App() {
 
         <main className="flex-1 min-h-0 p-3 lg:p-4 flex flex-col">
           <div data-workspace-region="queue" className="flex-none max-w-[1760px] w-full mx-auto mb-3">
+            {(storageError || captureQueue.storageError) && <div role="alert" className="border border-red-300 bg-red-50 px-4 py-2 text-sm text-red-900">No se puede guardar el trabajo: {storageError || captureQueue.storageError}. La bandeja está detenida. Conserve la aplicación abierta hasta recuperar el almacenamiento.</div>}
+            <AnimatePresence>
+              {loading && <LoaderOverlay step={loadingStep} takingLong={takingLong} inline />}
+            </AnimatePresence>
             <CaptureQueue
               items={captureQueue.items}
               selectedJointId={selectedJoint?.id}
