@@ -137,7 +137,21 @@ export class NoticeRepository {
     await atomicWrite(path.join(this.capturesDirectory, `${id}.png`), contents);
   }
 
+  async completeLegacyMigration(): Promise<void> {
+    await serializeStorage(this.stateFile, async () => {
+      await this.recoverImport();
+      await atomicWriteJson(path.join(this.root, 'migration-complete.json'), { schemaVersion: 1 });
+    });
+  }
+
   async cleanupOrphanedCaptures(maxAgeMs: number, now = Date.now()): Promise<string[]> {
+    try {
+      const marker = JSON.parse(await readFile(path.join(this.root, 'migration-complete.json'), 'utf8'));
+      if (marker.schemaVersion !== 1) return [];
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw error;
+    }
     const state = await this.loadQueue();
     const referenced = new Set<string>();
     const collect = (value: unknown): void => {

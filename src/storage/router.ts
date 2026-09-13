@@ -43,6 +43,13 @@ export function createStorageRouter(repository: NoticeRepository, clientDirector
     }
   });
 
+  router.post('/api/notices/migration-complete', async (_request, response, next) => {
+    try {
+      await repository.completeLegacyMigration();
+      response.status(204).end();
+    } catch (error) { next(error); }
+  });
+
   router.get('/api/notices/search', async (request, response, next) => {
     try {
       const filters: NoticeSearchFilters = {

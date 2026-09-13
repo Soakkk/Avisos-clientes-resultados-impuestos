@@ -371,6 +371,8 @@ export default function App() {
         captureQueue.hydrate(recoveredQueue);
         queueItemsRef.current = recoveredQueue;
         await persistWorkspace(recoveredQueue, rawNoticesRef.current);
+        const migration = await fetch('/api/notices/migration-complete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        if (!migration.ok) throw new Error('No se pudo confirmar la migración de los avisos.');
         localStorage.removeItem('aeat_raw_notices');
         setStorageReady(true);
         hydration.resolve();

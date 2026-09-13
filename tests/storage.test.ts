@@ -298,6 +298,16 @@ test('la limpieza conserva capturas referenciadas por bandeja activos e historia
     await utimes(file, new Date(0), new Date(0));
   }
 
+  await repository.completeLegacyMigration();
   assert.deepEqual(await repository.cleanupOrphanedCaptures(1, Date.now()), ['orphan']);
   assert.deepEqual((await readdir(captureDirectory)).sort(), ['active.png', 'archived.png', 'queued.png']);
+});
+
+test('la limpieza no borra originales antes de migrar localStorage', async () => {
+  const root = await makeRoot();
+  const repository = new NoticeRepository(root);
+  await repository.writeCapture('antigua', Buffer.from('captura referenciada aún en localStorage'));
+  await utimes(path.join(root, 'capturas/antigua.png'), new Date(0), new Date(0));
+  assert.deepEqual(await repository.cleanupOrphanedCaptures(1), []);
+  assert.equal(await readFile(path.join(root, 'capturas/antigua.png'), 'utf8'), 'captura referenciada aún en localStorage');
 });
