@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import type { EditorDraft } from '../editorDraft';
 import { TaxNotice, JointNotice, calculateAEATDeadlines, normalizeTaxResult } from '../types';
 import { Save, Trash2, Plus, X } from 'lucide-react';
 
@@ -6,12 +7,18 @@ interface NoticeEditorProps {
   notice: JointNotice;
   onSave: (updatedNotice: JointNotice) => void;
   onCancel: () => void;
+  initialDraft?: EditorDraft | null;
+  onDraftChange?: (draft: EditorDraft) => void;
 }
 
-export const NoticeEditor: React.FC<NoticeEditorProps> = ({ notice, onSave, onCancel }) => {
-  const [clientName, setClientName] = useState(notice.cliente_nombre);
-  const [clientNif, setClientNif] = useState(notice.cliente_nif);
-  const [taxes, setTaxes] = useState<TaxNotice[]>([...notice.notices]);
+export const NoticeEditor: React.FC<NoticeEditorProps> = ({ notice, onSave, onCancel, initialDraft, onDraftChange }) => {
+  const restored = initialDraft?.jointId === notice.id ? initialDraft : null;
+  const [clientName, setClientName] = useState(restored?.clientName ?? notice.cliente_nombre);
+  const [clientNif, setClientNif] = useState(restored?.clientNif ?? notice.cliente_nif);
+  const [taxes, setTaxes] = useState<TaxNotice[]>(restored?.taxes ?? [...notice.notices]);
+  useEffect(() => {
+    onDraftChange?.({ jointId: notice.id, clientName, clientNif, taxes });
+  }, [clientName, clientNif, taxes, notice.id, onDraftChange]);
 
   const handleTaxChange = (index: number, field: keyof TaxNotice, value: any) => {
     const updatedTaxes = [...taxes];

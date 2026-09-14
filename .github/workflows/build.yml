@@ -44,8 +44,19 @@ jobs:
           cache: npm
       - name: Instalar dependencias
         run: npm ci
+      - name: Comprobar TypeScript en Windows
+        run: npm run lint
+      - name: Ejecutar pruebas en Windows
+        run: npm test
       - name: Compilar instalador NSIS
         run: npm run electron:build
+      - name: Verificar metadatos del autoactualizador
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem dist-electron -Filter *.exe
+          $yml = Get-ChildItem dist-electron -Filter latest.yml
+          $blockmap = Get-ChildItem dist-electron -Filter *.blockmap
+          if (-not $exe -or -not $yml -or -not $blockmap) { throw "Faltan assets requeridos por electron-updater" }
       - name: Subir instalador como artefacto
         uses: actions/upload-artifact@v4
         with:
