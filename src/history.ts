@@ -1,6 +1,7 @@
 import type { ArchivedNotice, GroupingOverride, NoticeSearchFilters } from './storage/types';
 import type { JointNotice, TaxNotice } from './types';
 import { normalizeNifKey } from './validation';
+import { jointTotals } from './summary';
 
 const normalize = (value: string) => value
   .normalize('NFD')
@@ -33,9 +34,7 @@ export function groupNotices(notices: TaxNotice[], overrides: GroupingOverride[]
       cliente_nombre: first.cliente_nombre,
       cliente_nif: first.cliente_nif,
       notices: taxes,
-      total_importe: taxes.reduce((sum, tax) => sum + tax.importe, 0),
-      iban: taxes.find((tax) => tax.iban)?.iban || '',
-      todosDomiciliados: taxes.every((tax) => tax.tipo_resultado === 'Domiciliación'),
+      ...jointTotals(taxes),
       notaAsesoria: noteSource?.notaAsesoria || '',
       mostrarNotaAsesoria: noteSource?.mostrarNotaAsesoria || false,
     };

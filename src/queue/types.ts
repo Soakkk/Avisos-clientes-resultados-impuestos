@@ -17,7 +17,7 @@ export interface CaptureQueueState {
 export type CaptureQueueAction =
   | { type: 'hydrate'; items: CaptureItem[] }
   | { type: 'enqueue'; items: CaptureItem[] }
-  | { type: 'start'; id: string }
+  | { type: 'start'; id: string; limit?: number }
   | { type: 'complete'; id: string; jointId?: string }
   | { type: 'schedule-retry'; id: string; error: string }
   | { type: 'retry'; id: string; error: string }

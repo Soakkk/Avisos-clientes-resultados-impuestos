@@ -45,3 +45,30 @@ test('la bandeja persiste cada transición antes de continuar con otra captura',
     assert.deepEqual(events, ['pending,pending', 'processing,pending', 'process:a', 'review,pending', 'review,processing', 'process:b', 'review,review']);
   } finally { await act(async () => { root.unmount(); }); }
 });
+
+test('la bandeja lanza en paralelo tantas capturas como permita el límite', async () => {
+  const root = createRoot(document.createElement('div'));
+  let active = 0;
+  let maxActive = 0;
+  const releases: (() => void)[] = [];
+  const process = async (item: any) => {
+    active++; maxActive = Math.max(maxActive, active);
+    await new Promise<void>((resolve) => releases.push(resolve));
+    active--;
+    return { jointId: item.id };
+  };
+  let queue: ReturnType<typeof useCaptureQueue>;
+  function Harness() {
+    queue = useCaptureQueue({ concurrency: 2, initialItems: ['a', 'b', 'c'].map(id => ({ id, fileId: id, status: 'pending' as const, attempts: 0, createdAt: '2026-09-13' })), process, persist: async () => {} });
+    return null;
+  }
+  try {
+    await act(async () => { root.render(createElement(Harness)); });
+    assert.equal(maxActive, 2);
+    for (let round = 0; round < 3; round++) {
+      await act(async () => { releases.splice(0).forEach((release) => release()); });
+    }
+    assert.equal(maxActive, 2);
+    assert.deepEqual(queue!.items.map((entry) => entry.status), ['review', 'review', 'review']);
+  } finally { await act(async () => { root.unmount(); }); }
+});

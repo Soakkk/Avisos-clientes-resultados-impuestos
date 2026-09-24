@@ -1,17 +1,23 @@
-import React, { useCallback, useState, useEffect, useRef } from 'react';
-import { TaxNotice, JointNotice, NoticeVerification, calculateAEATDeadlines, formatDateSpanish, normalizeTaxResult } from './types';
-import { verifyNoticeFields, normalizeNifKey } from './validation';
-import { LoaderOverlay } from './components/LoaderOverlay';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { toBlob, toPng } from 'html-to-image';
+import { Check, Copy, Image as ImageIcon, LoaderCircle, MessageSquareText, Upload } from 'lucide-react';
+import { CalendarClock, Landmark, WalletCards } from 'lucide-react';
+import { TaxNotice, JointNotice, normalizeTaxResult, withDeadlines } from './types';
+import { normalizeNifKey } from './validation';
 import { NoticeEditor } from './components/NoticeEditor';
-import { NoticeCard, CardFormat } from './components/NoticeCard';
-import { ApiKeySettings } from './components/ApiKeySettings';
-import { buildWhatsAppText } from './whatsapp';
-import { toBlob } from 'html-to-image';
+import { NoticeCard, type CardFormat } from './components/NoticeCard';
 import { CaptureQueue } from './components/CaptureQueue';
 import { NoticeHistory } from './components/NoticeHistory';
+import { NoticeList, jointState } from './components/NoticeList';
+import { NoticeDetails, verificationIssues } from './components/NoticeDetails';
+import { Ribbon } from './components/Ribbon';
+import { SettingsDialog, type AiConfig, type SettingsTab } from './components/SettingsDialog';
+import { ConfirmDialog, ToastStack, useFeedback } from './components/ui/Feedback';
+import { buildWhatsAppText } from './whatsapp';
+import { applyManualEdit, buildNoticeFromReading, type ReadTaxResponse } from './noticeFactory';
+import { loadPreferences, savePreferences, type Preferences } from './preferences';
 import {
   completeAndContinue,
-  createMergeOverride,
   createSplitOverride,
   groupNotices,
   undoGroupingOverride,
@@ -22,42 +28,11 @@ import type { CaptureItem } from './queue/types';
 import type { ArchivedNotice, GroupingOverride, NoticeState } from './storage/types';
 import type { UpdateStatus } from './update-status';
 import type { EditorDraft } from './editorDraft';
-import { 
-  Clipboard, 
-  Upload, 
-  FileText, 
-  Trash2, 
-  Copy, 
-  Check, 
-  Plus, 
-  Image as ImageIcon, 
-  History, 
-  Sparkles, 
-  Sliders, 
-  Calendar, 
-  Info,
-  ExternalLink,
-  Edit2,
-  Star,
-  ChevronDown,
-  ChevronUp,
-  Settings2,
-  X,
-  MessageSquareText,
-  Landmark,
-  WalletCards,
-  CalendarClock,
-  PanelTop
-} from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
-import { ShieldCheck, ShieldAlert, ShieldQuestion } from 'lucide-react';
 
 const appIcon = new URL('./assets/app-icon.png', import.meta.url).href;
 
-// Comprime la captura a una miniatura JPEG pequeña (~10-30 KB). En localStorage solo
-// se guarda esta miniatura: el PNG original en base64 ocupaba 1-3 MB por captura y
-// reventaba el límite de ~5 MB de localStorage con pocas capturas (QuotaExceededError
-// silencioso = avisos que dejaban de guardarse).
+// Comprime la captura a una miniatura JPEG pequeña (~10-30 KB) para la interfaz.
+// La captura original se guarda en disco aparte.
 function compressToThumbnail(dataUrl: string, maxSide = 640, quality = 0.72): Promise<string> {
   return new Promise((resolve) => {
     const img = new Image();
@@ -107,87 +82,27 @@ function fileToDataUrl(file: Blob): Promise<string> {
   });
 }
 
-// Combina la validación determinista (checksums) con el resultado de la segunda
-// lectura de la IA para dar un veredicto por aviso.
-function buildVerification(
-  notice: Pick<TaxNotice, 'modelo' | 'periodo' | 'ejercicio' | 'cliente_nif' | 'cliente_nombre' | 'importe' | 'tipo_resultado' | 'iban'>,
-  discrepanciasIA: { campo: string; primera: string; segunda: string }[],
-  segundaLecturaHecha: boolean
-): NoticeVerification {
-  const checks = verifyNoticeFields(notice);
-  const hasProblem = checks.some((c) => c.status !== 'ok') || discrepanciasIA.length > 0;
-  return {
-    estado: hasProblem ? 'revisar' : segundaLecturaHecha ? 'ok' : 'sin-verificar',
-    checks,
-    discrepanciasIA,
-    segundaLecturaHecha,
-  };
-}
-
-const FIELD_LABELS: Record<string, string> = {
-  iban: 'IBAN',
-  cliente_nif: 'NIF',
-  cliente_nombre: 'Nombre',
-  importe: 'Importe',
-  modelo: 'Modelo',
-  periodo: 'Periodo',
-  ejercicio: 'Ejercicio',
-  tipo_resultado: 'Resultado',
-  fecha_presentacion: 'Fecha de presentación',
-};
-
-// Resultados en los que el cliente no paga nada: el importe no se ingresa ni lo
-// devuelve Hacienda, se arrastra a declaraciones posteriores. Sin esto, a un 130
-// negativo se le pedía "realice el pago antes de la fecha límite".
-const ADVISORY_NOTE_PRESETS = [
-  {
-    id: 'aplazamiento',
-    label: 'Aplazamiento',
-    text: 'Avísenos si desea solicitar un aplazamiento.',
-    icon: Landmark,
-  },
-  {
-    id: 'saldo',
-    label: 'Saldo suficiente',
-    text: 'Recuerde disponer de saldo suficiente.',
-    icon: WalletCards,
-  },
-  {
-    id: 'domiciliacion',
-    label: 'Confirmar domiciliación',
-    text: 'Pendiente de confirmar la domiciliación.',
-    icon: CalendarClock,
-  },
-] as const;
-
-/**
- * El 130/131 no tiene resultado "a compensar": eso es del IVA. Cuando el pago
- * fraccionado sale negativo es una declaración NEGATIVA, que se deduce en los
- * trimestres siguientes del mismo año. La IA lo leía a veces como "A compensar"
- * y el aviso hablaba de un "saldo a su favor", que suena a dinero por cobrar.
- */
-function normalizarResultado(modelo: unknown, tipo: unknown): TaxNotice['tipo_resultado'] {
-  return normalizeTaxResult(modelo, tipo);
-}
-
-/**
- * Convierte la fecha de presentación que lee la IA ("15/07/2026") a ISO.
- * Devuelve undefined ante cualquier cosa rara: esta fecha va en el aviso del
- * cliente, así que mejor no enseñar ninguna que enseñar una inventada.
- */
-function parseFechaEspanola(valor: unknown): string | undefined {
-  if (typeof valor !== 'string') return undefined;
-  const m = valor.trim().match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
-  if (!m) return undefined;
-  const [, d, mes, a] = m;
-  const fecha = new Date(Number(a), Number(mes) - 1, Number(d));
-  // new Date(2026, 1, 31) no falla, "corrige" la fecha al 3 de marzo: hay que
-  // comprobar que los componentes siguen siendo los mismos para colar un 31/02.
-  if (fecha.getFullYear() !== Number(a) || fecha.getMonth() !== Number(mes) - 1 || fecha.getDate() !== Number(d)) {
+async function lookupClient(nif: string): Promise<{ nombre?: string; iban?: string } | undefined> {
+  if (!nif) return undefined;
+  try {
+    const response = await fetch(`/api/clients/${encodeURIComponent(nif)}`);
+    if (!response.ok) return undefined;
+    const data = await response.json();
+    return data.nombre || data.iban ? { nombre: data.nombre || undefined, iban: data.iban || undefined } : undefined;
+  } catch {
     return undefined;
   }
-  return fecha.toISOString();
 }
+
+const ADVISORY_NOTE_PRESETS = [
+  { id: 'aplazamiento', label: 'Aplazamiento', text: 'Avísenos si desea solicitar un aplazamiento.', icon: Landmark },
+  { id: 'saldo', label: 'Saldo suficiente', text: 'Recuerde disponer de saldo suficiente.', icon: WalletCards },
+  { id: 'domiciliacion', label: 'Confirmar domiciliación', text: 'Pendiente de confirmar la domiciliación.', icon: CalendarClock },
+] as const;
+
+const EXPORT_OPTIONS = { pixelRatio: 2, backgroundColor: '#FBF9F5', cacheBust: true, skipFonts: true };
+
+const DISCARD_UNDO_MS = 8000;
 
 export default function App() {
   const [rawNotices, setRawNotices] = useState<TaxNotice[]>([]);
@@ -210,25 +125,22 @@ export default function App() {
   const workspaceWrites = useRef<Promise<unknown>>(Promise.resolve());
   const editorDraftRef = useRef<EditorDraft | null>(null);
   const processImageFileRef = useRef<(file: File, persistedFileId?: string) => Promise<{ jointId: string }>>();
-  const [loading, setLoading] = useState(false);
-  const [loadingStep, setLoadingStep] = useState(0);
-  const [takingLong, setTakingLong] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [processingCount, setProcessingCount] = useState(0);
   const [editingJointId, setEditingJointId] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<Record<string, 'text' | 'image'>>({});
-  const [copiedTextId, setCopiedTextId] = useState<string | null>(null);
+  const [view, setView] = useState<'image' | 'text'>('image');
+  const [copied, setCopied] = useState<'text' | 'image' | null>(null);
   const [selectedJointId, setSelectedJointId] = useState<string | null>(null);
   selectedJointIdRef.current = selectedJointId;
-  const [openMenu, setOpenMenu] = useState<'file' | 'edit' | 'view' | 'history' | 'help' | null>(null);
-  const [historyExpanded, setHistoryExpanded] = useState(true);
-  const [showPreferences, setShowPreferences] = useState(false);
-
-  
-  // Custom settings saved in LocalStorage
-  const [agencyName, setAgencyName] = useState('Asesoría E. Marín');
-  const [signatureText, setSignatureText] = useState('Atentamente,\nAsesoría E. Marín');
-  const [cardFormat, setCardFormat] = useState<CardFormat>('A');
+  const [settingsTab, setSettingsTab] = useState<SettingsTab | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const [preferences, setPreferences] = useState<Preferences>(() => loadPreferences());
+  const [aiConfig, setAiConfig] = useState<AiConfig | null>(null);
   const [appVersion, setAppVersion] = useState('');
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
+  const feedback = useFeedback();
+  const { notify, confirm } = feedback;
 
   const persistWorkspace = useCallback(async (
     queueItems = queueItemsRef.current,
@@ -246,12 +158,12 @@ export default function App() {
     };
     const body = JSON.stringify(state);
     const writing = workspaceWrites.current.catch(() => {}).then(async () => {
-    const response = await fetch('/api/notices/state', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body,
-    });
-    if (!response.ok) throw new Error('No se pudo guardar la bandeja en disco.');
+      const response = await fetch('/api/notices/state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      });
+      if (!response.ok) throw new Error('No se pudo guardar la bandeja en disco.');
     });
     workspaceWrites.current = writing;
     try {
@@ -263,10 +175,22 @@ export default function App() {
     }
   }, []);
 
+  // Escribir en la nota o en el editor no debe reescribir el archivo en cada
+  // tecla: se agrupan los cambios y se guarda al dejar de escribir. Los datos
+  // viven en las refs, así que un cierre inmediato guarda igualmente lo último.
+  const persistTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const schedulePersist = useCallback(() => {
+    if (persistTimer.current) clearTimeout(persistTimer.current);
+    persistTimer.current = setTimeout(() => {
+      persistTimer.current = null;
+      void persistWorkspace().catch(() => {});
+    }, 600);
+  }, [persistWorkspace]);
+
   const rememberDraft = useCallback((draft: EditorDraft) => {
     editorDraftRef.current = draft;
-    if (storageReady) void persistWorkspace().catch(() => {});
-  }, [persistWorkspace, storageReady]);
+    if (storageReady) schedulePersist();
+  }, [schedulePersist, storageReady]);
 
   const cancelEditing = () => {
     editorDraftRef.current = null;
@@ -289,26 +213,38 @@ export default function App() {
     };
   }, [hydration, persistWorkspace]);
 
-  // Versión instalada (la expone el servidor en /api/health)
+  // Versión instalada y configuración de la IA (modelo y capturas en paralelo).
+  const refreshAiConfig = useCallback(() => {
+    fetch('/api/config')
+      .then((response) => (response.ok ? response.json() : null))
+      .then((config) => { if (config) setAiConfig(config); })
+      .catch(() => {});
+  }, []);
   useEffect(() => {
     fetch('/api/health')
       .then((r) => r.json())
       .then((d) => { if (d.version) setAppVersion(d.version); })
       .catch(() => {});
-  }, []);
+    refreshAiConfig();
+  }, [refreshAiConfig]);
 
-  // Las preferencias ligeras siguen en localStorage. Los avisos se hidratan
-  // desde disco y solo se consulta localStorage para una migración única.
+  // Guarda la bandeja en disco
+  const saveNoticesToLocal = (newNotices: TaxNotice[], { deferred = false } = {}) => {
+    rawNoticesRef.current = newNotices;
+    setRawNotices(newNotices);
+    if (deferred) {
+      schedulePersist();
+      return;
+    }
+    void persistWorkspace(queueItemsRef.current, newNotices).catch((error) => {
+      console.error('No se pudo guardar en disco', error);
+      notify('No se han podido guardar los avisos en disco.', { tone: 'error', detail: 'No añada más capturas hasta reiniciar la aplicación.' });
+    });
+  };
+
+  // Los avisos se hidratan desde disco y solo se consulta localStorage para
+  // una migración única de versiones antiguas.
   useEffect(() => {
-    const savedAgency = localStorage.getItem('aeat_agency_name');
-    if (savedAgency) setAgencyName(savedAgency);
-
-    const savedSignature = localStorage.getItem('aeat_signature_text');
-    if (savedSignature) setSignatureText(savedSignature);
-
-    const savedFormat = localStorage.getItem('aeat_card_format');
-    if (savedFormat === 'A' || savedFormat === 'B' || savedFormat === 'C') setCardFormat(savedFormat);
-
     void fetch('/api/notices/state')
       .then((response) => {
         if (!response.ok) throw new Error('No se pudo abrir el almacenamiento de avisos.');
@@ -331,38 +267,32 @@ export default function App() {
         if (draft?.jointId) setSelectedJointId(draft.jointId);
         const diskNotices = Array.isArray(stored.activeNotices) ? stored.activeNotices as TaxNotice[] : [];
         let source = diskNotices;
-        const savedNotices = localStorage.getItem('aeat_raw_notices');
+        let savedNotices: string | null = null;
+        try { savedNotices = localStorage.getItem('aeat_raw_notices'); } catch { savedNotices = null; }
         if (source.length === 0 && savedNotices) source = JSON.parse(savedNotices) as TaxNotice[];
 
         if (source.length > 0) {
-        // Migra avisos antiguos con tildes dañadas y refresca las fechas con
-        // las reglas actuales.
-        const normalized = source.map((notice) => {
-          const deadlines = calculateAEATDeadlines(notice.modelo, notice.periodo, notice.ejercicio);
-          return {
+          // Migra avisos antiguos con tildes dañadas y refresca las fechas con
+          // el calendario actual.
+          const normalized = source.map((notice) => withDeadlines({
             ...notice,
             tipo_resultado: normalizeTaxResult(notice.modelo, notice.tipo_resultado),
-            fechaCargo: deadlines.fechaCargo.toISOString(),
-            fechaLimiteDomiciliacion: deadlines.fechaLimiteDomiciliacion.toISOString(),
-          };
-        });
-        rawNoticesRef.current = normalized;
-        setRawNotices(normalized);
+          }));
+          rawNoticesRef.current = normalized;
+          setRawNotices(normalized);
 
-        // Migración suave: avisos guardados por versiones anteriores llevan la
-        // captura completa en base64 dentro de localStorage. Se re-comprimen a
-        // miniatura para liberar espacio (la original de esos avisos ya no existe
-        // en disco, pero la miniatura sigue siendo perfectamente legible).
-        const oversized = normalized.filter((n) => (n.screenshotUrl?.length || 0) > 150_000);
-        if (oversized.length > 0) {
-          Promise.all(
-            normalized.map(async (n) =>
-              (n.screenshotUrl?.length || 0) > 150_000
-                ? { ...n, screenshotUrl: await compressToThumbnail(n.screenshotUrl!) }
-                : n
-            )
-          ).then((migrated) => saveNoticesToLocal(migrated));
-        }
+          // Avisos de versiones antiguas con la captura completa en base64: se
+          // re-comprimen a miniatura para liberar espacio.
+          const oversized = normalized.filter((n) => (n.screenshotUrl?.length || 0) > 150_000);
+          if (oversized.length > 0) {
+            Promise.all(
+              normalized.map(async (n) =>
+                (n.screenshotUrl?.length || 0) > 150_000
+                  ? { ...n, screenshotUrl: await compressToThumbnail(n.screenshotUrl!) }
+                  : n
+              )
+            ).then((migrated) => saveNoticesToLocal(migrated));
+          }
         }
         const recoveredQueue = (Array.isArray(stored.queue) ? stored.queue as CaptureItem[] : []).map((item) => {
           const completed = rawNoticesRef.current.find(notice => notice.screenshotId === item.fileId);
@@ -373,45 +303,31 @@ export default function App() {
         await persistWorkspace(recoveredQueue, rawNoticesRef.current);
         const migration = await fetch('/api/notices/migration-complete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
         if (!migration.ok) throw new Error('No se pudo confirmar la migración de los avisos.');
-        localStorage.removeItem('aeat_raw_notices');
+        try { localStorage.removeItem('aeat_raw_notices'); } catch { /* nada que migrar */ }
         setStorageReady(true);
         hydration.resolve();
       })
       .catch((error) => {
         hydration.reject(error);
         console.error('Failed to load saved notices', error);
-        alert('No se ha podido abrir el almacenamiento local. Reinicie la aplicación antes de añadir más capturas.');
+        setStorageError('No se ha podido abrir el almacenamiento local. Reinicie la aplicación antes de añadir más capturas.');
       });
   }, []);
 
-  // Save changes to localStorage
-  const saveNoticesToLocal = (newNotices: TaxNotice[]) => {
-    rawNoticesRef.current = newNotices;
-    setRawNotices(newNotices);
-    void persistWorkspace(queueItemsRef.current, newNotices).catch((error) => {
-      console.error('No se pudo guardar en disco', error);
-      alert('Atención: no se han podido guardar los avisos en disco. No añada más capturas hasta reiniciar la aplicación.');
-    });
+  const handleSavePreferences = (next: Preferences) => {
+    setPreferences(next);
+    savePreferences(next);
+    notify('Ajustes guardados.', { tone: 'success' });
   };
 
-  const handleAgencyNameChange = (val: string) => {
-    setAgencyName(val);
-    localStorage.setItem('aeat_agency_name', val);
+  const handleCardFormatChange = (format: CardFormat) => {
+    const next = { ...preferences, cardFormat: format };
+    setPreferences(next);
+    savePreferences(next);
   };
 
-  const handleCardFormatChange = (val: CardFormat) => {
-    setCardFormat(val);
-    localStorage.setItem('aeat_card_format', val);
-  };
-
-  const handleSignatureChange = (val: string) => {
-    setSignatureText(val);
-    localStorage.setItem('aeat_signature_text', val);
-  };
-
-  // Helper to load sample data from the user request
   const loadExampleData = () => {
-    const sampleNotice: TaxNotice = {
+    const sample = withDeadlines({
       id: 'sample-' + Math.random().toString(36).substring(2, 9),
       modelo: '303',
       modelo_nombre: 'Impuesto sobre el Valor Añadido (IVA Trimestral)',
@@ -420,45 +336,32 @@ export default function App() {
       cliente_nif: '22467169X',
       cliente_nombre: 'MALDONADO GARCIA MARIA PILAR',
       importe: 818.55,
-      tipo_resultado: 'Domiciliación',
+      tipo_resultado: 'Domiciliación' as const,
       iban: 'ES2900811016100006298239',
-      screenshotUrl: '', // placeholder
-      fechaCargo: '', // calculated below
-      fechaLimiteDomiciliacion: '', // calculated below
-      timestamp: Date.now()
-    };
-
-    const deadlines = calculateAEATDeadlines(sampleNotice.modelo, sampleNotice.periodo, sampleNotice.ejercicio);
-    sampleNotice.fechaCargo = deadlines.fechaCargo.toISOString();
-    sampleNotice.fechaLimiteDomiciliacion = deadlines.fechaLimiteDomiciliacion.toISOString();
-
-    const updated = [sampleNotice, ...rawNotices];
-    saveNoticesToLocal(updated);
+      screenshotUrl: '',
+      fechaCargo: '',
+      fechaLimiteDomiciliacion: '',
+      timestamp: Date.now(),
+    });
+    saveNoticesToLocal([sample, ...rawNoticesRef.current]);
+    setSelectedJointId(normalizeNifKey(sample.cliente_nif, sample.cliente_nombre));
   };
 
-  // Process the uploaded or pasted image file
+  // Lee una captura: la lectura principal y la de verificación se hacen a la
+  // vez en el servidor, con dos modelos distintos.
   const processImageFile = async (file: File, persistedFileId?: string) => {
-    setLoading(true);
-    setLoadingStep(0);
-    setTakingLong(false);
-
-    const stepInterval = setInterval(() => {
-      setLoadingStep((prev) => Math.min(prev + 1, 5));
-    }, 1200);
-
-    // Si Gemini se cuelga y hay que reintentar, avisamos para que no parezca colgado
-    const longTimer = setTimeout(() => setTakingLong(true), 14000);
-
+    setProcessingCount((count) => count + 1);
     try {
-      // 1. Convert file to base64
       const base64Image = await fileToDataUrl(file);
-
-      // 2. Call backend server API
-      const response = await fetch('/api/gemini/analyze-tax', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ imageBase64: base64Image })
-      });
+      const [response, screenshotId, thumbnail] = await Promise.all([
+        fetch('/api/gemini/read-tax', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ imageBase64: base64Image }),
+        }),
+        persistedFileId ? Promise.resolve(persistedFileId) : saveCaptureToDisk(base64Image),
+        compressToThumbnail(base64Image),
+      ]);
 
       if (!response.ok) {
         const errData = await response.json().catch(() => ({}));
@@ -469,68 +372,21 @@ export default function App() {
         throw new Error(message);
       }
 
-      const data = await response.json();
-
-      // 3. En paralelo: segunda lectura de verificación con la IA, guardado de la
-      // captura original en disco y miniatura comprimida para la interfaz.
-      const [verifyRes, screenshotId, thumbnail] = await Promise.all([
-        fetch('/api/gemini/verify-tax', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ imageBase64: base64Image, extracted: data }),
-        })
-          .then((r) => (r.ok ? r.json() : null))
-          .catch(() => null),
-        persistedFileId ? Promise.resolve(persistedFileId) : saveCaptureToDisk(base64Image),
-        compressToThumbnail(base64Image),
-      ]);
-
-      // 4. Calculate AEAT deadline dates
-      const deadlines = calculateAEATDeadlines(data.modelo, data.periodo, data.ejercicio);
-
-      // 5. Construct final Notice object
-      const newNotice: TaxNotice = {
-        id: Math.random().toString(36).substring(2, 9),
-        modelo: data.modelo || '303',
-        modelo_nombre: data.modelo_nombre || 'Declaración Tributaria',
-        periodo: data.periodo || '2T',
-        ejercicio: data.ejercicio || new Date().getFullYear().toString(),
-        cliente_nif: data.cliente_nif || 'Pendiente',
-        cliente_nombre: data.cliente_nombre || 'Cliente Desconocido',
-        importe: typeof data.importe === 'number' ? data.importe : parseFloat(data.importe) || 0,
-        tipo_resultado: normalizarResultado(data.modelo, data.tipo_resultado),
-        iban: data.iban || '',
-        screenshotUrl: thumbnail,
-        screenshotId,
-        fechaCargo: deadlines.fechaCargo.toISOString(),
-        fechaLimiteDomiciliacion: deadlines.fechaLimiteDomiciliacion.toISOString(),
-        fechaPresentacion: parseFechaEspanola(data.fecha_presentacion),
-        timestamp: Date.now()
-      };
-
-      // 6. Veredicto de verificación: checksums (IBAN/NIF/periodo...) + comparación
-      // de las dos lecturas independientes de la IA.
-      newNotice.verificacion = buildVerification(
-        newNotice,
-        verifyRes?.discrepancias || [],
-        !!verifyRes
-      );
-
-      // Add to our list
-      const updated = [newNotice, ...rawNoticesRef.current];
-      saveNoticesToLocal(updated);
-      return { jointId: normalizeNifKey(newNotice.cliente_nif, newNotice.cliente_nombre) };
-
+      const result = await response.json() as ReadTaxResponse;
+      const nif = String(result.data?.cliente_nif || '').replace(/[\s.-]+/g, '').toUpperCase();
+      const clienteConocido = await lookupClient(nif);
+      const newNotice = buildNoticeFromReading(result, { screenshotId, screenshotUrl: thumbnail, clienteConocido });
+      saveNoticesToLocal([newNotice, ...rawNoticesRef.current]);
+      const jointId = normalizeNifKey(newNotice.cliente_nif, newNotice.cliente_nombre);
+      if (!selectedJointIdRef.current) setSelectedJointId(jointId);
+      return { jointId };
     } catch (err: any) {
       console.error(err);
       if (err instanceof TemporaryCaptureError) throw err;
       if (err instanceof TypeError) throw new TemporaryCaptureError(err.message || 'Error de red');
       throw err;
     } finally {
-      clearInterval(stepInterval);
-      clearTimeout(longTimer);
-      setTakingLong(false);
-      setLoading(false);
+      setProcessingCount((count) => Math.max(0, count - 1));
     }
   };
 
@@ -552,15 +408,23 @@ export default function App() {
     await persistWorkspace(items, rawNoticesRef.current);
   }, [persistWorkspace]);
 
-  const captureQueue = useCaptureQueue({ ready: storageReady, process: processQueuedCapture, persist: persistQueue });
+  const captureQueue = useCaptureQueue({
+    ready: storageReady,
+    concurrency: aiConfig?.concurrency || 1,
+    process: processQueuedCapture,
+    persist: persistQueue,
+  });
 
   const enqueueFiles = useCallback(async (files: File[]) => {
     if (!storageReady) {
-      alert('El almacenamiento local todavía no está disponible. Espere un momento y vuelva a intentarlo.');
+      notify('El almacenamiento todavía no está disponible. Espere un momento y vuelva a intentarlo.', { tone: 'warning' });
       return;
     }
     const accepted = files.filter((file) => file.type.startsWith('image/'));
-    if (accepted.length === 0) return;
+    if (accepted.length === 0) {
+      notify('Solo se pueden añadir imágenes (PNG, JPEG o WebP).', { tone: 'warning' });
+      return;
+    }
     try {
       const queued: CaptureItem[] = [];
       for (const [index, file] of accepted.entries()) {
@@ -576,38 +440,38 @@ export default function App() {
         });
       }
       captureQueue.enqueue(queued);
+      notify(queued.length === 1 ? 'Captura añadida. Leyendo…' : `${queued.length} capturas añadidas. Leyendo…`);
     } catch (error) {
       console.error(error);
-      alert('No se ha podido guardar la bandeja en disco. No se aceptarán más capturas hasta que vuelva a intentarlo.');
+      notify('No se ha podido guardar la captura en disco.', { tone: 'error', detail: error instanceof Error ? error.message : String(error) });
     }
-  }, [captureQueue.enqueue, storageReady]);
+  }, [captureQueue.enqueue, notify, storageReady]);
 
-  // Listening for paste events globally
+  // Pegado global (Ctrl+V en cualquier parte de la ventana)
   useEffect(() => {
     const handlePaste = (e: ClipboardEvent) => {
       const items = e.clipboardData?.items;
       if (!items) return;
       const files: File[] = [];
       for (let i = 0; i < items.length; i++) {
-        if (items[i].type.indexOf("image") !== -1) {
+        if (items[i].type.indexOf('image') !== -1) {
           const file = items[i].getAsFile();
           if (file) files.push(file);
         }
       }
       if (files.length > 0) void enqueueFiles(files);
     };
-    window.addEventListener("paste", handlePaste);
-    return () => window.removeEventListener("paste", handlePaste);
+    window.addEventListener('paste', handlePaste);
+    return () => window.removeEventListener('paste', handlePaste);
   }, [enqueueFiles]);
 
-  // Click handler to trigger browser clipboard read API (Chrome/Edge/Opera supported)
   const handleReadClipboard = async () => {
     try {
       const clipboardItems = await navigator.clipboard.read();
       const files: File[] = [];
       for (const item of clipboardItems) {
         for (const type of item.types) {
-          if (type.startsWith("image/")) {
+          if (type.startsWith('image/')) {
             const blob = await item.getType(type);
             files.push(new File([blob], `captura-${files.length + 1}.png`, { type }));
           }
@@ -617,10 +481,10 @@ export default function App() {
         await enqueueFiles(files);
         return;
       }
-      alert("No se encontró ninguna imagen en el portapapeles. Haz una captura primero (Impr Pant) y pulsa Ctrl+V directamente en la ventana.");
+      notify('No hay ninguna imagen en el portapapeles.', { tone: 'warning', detail: 'Haga una captura (Impr Pant o Win+Mayús+S) y pulse Ctrl+V en esta ventana.' });
     } catch (err) {
-      console.error("Read clipboard failed", err);
-      alert("Para usar el portapapeles directo, pulsa Ctrl+V directamente en esta ventana, o arrastra un archivo de imagen.");
+      console.error('Read clipboard failed', err);
+      notify('No se pudo leer el portapapeles.', { tone: 'warning', detail: 'Pulse Ctrl+V directamente en esta ventana o arrastre la imagen.' });
     }
   };
 
@@ -628,51 +492,83 @@ export default function App() {
   const selectedJoint = groupedNotices.find((joint) => joint.id === selectedJointId)
     || groupedNotices[0]
     || null;
-  const selectedJointIndex = selectedJoint ? groupedNotices.findIndex((joint) => joint.id === selectedJoint.id) : -1;
-  const mergeCandidate = groupedNotices.length > 1 && selectedJointIndex >= 0
-    ? groupedNotices[(selectedJointIndex + 1) % groupedNotices.length]
-    : null;
-  const selectedTab: 'text' | 'image' = selectedJoint
-    ? (activeTab[selectedJoint.id] || 'image')
-    : 'image';
-  const selectedVerificationState = (() => {
-    if (!selectedJoint) return 'empty';
-    let review = false;
-    let unverified = false;
-    selectedJoint.notices.forEach((notice) => {
-      if (!notice.verificacion || notice.verificacion.estado === 'sin-verificar') unverified = true;
-      if (notice.verificacion?.estado === 'revisar') review = true;
+
+  const generateWhatsAppText = (joint: JointNotice): string => buildWhatsAppText(joint, {
+    agencyName: preferences.agencyName,
+    signatureText: preferences.signatureText,
+    templates: preferences.templates,
+  });
+
+  const flashCopied = (kind: 'text' | 'image') => {
+    setCopied(kind);
+    setTimeout(() => setCopied((current) => (current === kind ? null : current)), 2000);
+  };
+
+  const copyWhatsAppText = async (joint: JointNotice) => {
+    await navigator.clipboard.writeText(generateWhatsAppText(joint));
+    flashCopied('text');
+  };
+
+  const exportCard = (joint: JointNotice) => {
+    const card = document.querySelector(`[data-export-surface="${CSS.escape(joint.id)}"] [data-notice-card]`) as HTMLElement | null;
+    if (!card) throw new Error('No se encuentra la ficha para exportar.');
+    return card;
+  };
+
+  const copyNoticeImage = async (joint: JointNotice) => {
+    const card = exportCard(joint);
+    // La primera pasada carga las imágenes en caché; la segunda sale completa.
+    await toBlob(card, EXPORT_OPTIONS);
+    const blob = await toBlob(card, EXPORT_OPTIONS);
+    if (!blob) throw new Error('No se pudo generar la imagen.');
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+    flashCopied('image');
+  };
+
+  const downloadNoticeImage = async (joint: JointNotice) => {
+    try {
+      const card = exportCard(joint);
+      await toPng(card, EXPORT_OPTIONS);
+      const dataUrl = await toPng(card, EXPORT_OPTIONS);
+      const link = document.createElement('a');
+      link.download = `Aviso_${(joint.cliente_nombre || 'cliente').replace(/[^\p{L}\p{N}]+/gu, '_')}.png`;
+      link.href = dataUrl;
+      link.click();
+    } catch (error) {
+      notify('No se pudo guardar la imagen.', { tone: 'error', detail: error instanceof Error ? error.message : String(error) });
+    }
+  };
+
+  /** Antes de enviar algo al cliente, pide confirmación si hay datos por revisar. */
+  const confirmIfNeedsReview = async (joint: JointNotice) => {
+    if (jointState(joint) !== 'review') return true;
+    const issues = verificationIssues(joint);
+    return confirm({
+      title: 'Este aviso tiene datos por revisar',
+      message: `${issues.slice(0, 3).map((issue) => issue.text).join(' ')}${issues.length > 3 ? ` (y ${issues.length - 3} más)` : ''} ¿Quiere copiarlo de todos modos?`,
+      confirmLabel: 'Copiar igualmente',
     });
-    return review ? 'review' : unverified ? 'unverified' : 'ok';
-  })();
-  const selectedVerificationIssues = selectedJoint
-    ? selectedJoint.notices.flatMap((notice) => {
-        const verification = notice.verificacion;
-        if (!verification) return [];
-        const prefix = selectedJoint.notices.length > 1 ? `Modelo ${notice.modelo}: ` : '';
-        const checks = verification.checks
-          .filter((check) => check.status !== 'ok')
-          .map((check) => ({ level: check.status, text: prefix + check.message }));
-        const discrepancies = (verification.discrepanciasIA || []).map((difference) => ({
-          level: 'error' as const,
-          text: `${prefix}${FIELD_LABELS[difference.campo] || difference.campo}: las dos lecturas no coinciden («${difference.primera}» / «${difference.segunda}»).`,
-        }));
-        return [...checks, ...discrepancies];
-      })
-    : [];
+  };
 
-  const selectedChargeDate = selectedJoint?.notices.length
-    ? selectedJoint.notices
-        .map((notice) => new Date(notice.fechaCargo))
-        .filter((date) => !isNaN(date.getTime()))
-        .sort((a, b) => a.getTime() - b.getTime())[0]
-    : null;
+  const handleCopyText = async (joint: JointNotice) => {
+    if (!(await confirmIfNeedsReview(joint))) return;
+    try {
+      await copyWhatsAppText(joint);
+      notify('Texto copiado. Péguelo en WhatsApp.', { tone: 'success' });
+    } catch (error) {
+      notify('No se pudo copiar el texto.', { tone: 'error', detail: error instanceof Error ? error.message : String(error) });
+    }
+  };
 
-
-
-  const activeAdvisoryPresetId = selectedJoint
-    ? ADVISORY_NOTE_PRESETS.find((preset) => preset.text === (selectedJoint.notaAsesoria || '').trim())?.id
-    : undefined;
+  const handleCopyImage = async (joint: JointNotice) => {
+    if (!(await confirmIfNeedsReview(joint))) return;
+    try {
+      await copyNoticeImage(joint);
+      notify('Imagen copiada. Péguela en WhatsApp.', { tone: 'success' });
+    } catch (error) {
+      notify('No se pudo copiar la imagen.', { tone: 'error', detail: error instanceof Error ? error.message : String(error) });
+    }
+  };
 
   const handleAdvisoryNoteChange = (jointId: string, enabled: boolean, text: string) => {
     const cleanText = text.slice(0, 240);
@@ -682,84 +578,72 @@ export default function App() {
         ? { ...notice, mostrarNotaAsesoria: enabled, notaAsesoria: cleanText }
         : notice
     );
-    saveNoticesToLocal(updated);
-  };
-  const generateWhatsAppText = (joint: JointNotice): string => buildWhatsAppText(joint, { agencyName, signatureText });
-
-  const copyWhatsAppText = async (joint: JointNotice) => {
-    const text = generateWhatsAppText(joint);
-    await navigator.clipboard.writeText(text);
-    setCopiedTextId(joint.id);
-    setTimeout(() => setCopiedTextId(null), 2000);
+    saveNoticesToLocal(updated, { deferred: true });
   };
 
   const handleEditSave = (updatedJoint: JointNotice) => {
-    // Tras una edición manual: recalcular fechas y re-verificar con los checksums.
-    // Las discrepancias de la doble lectura de la IA se descartan (el usuario acaba
-    // de revisar los datos a mano, y eso es la verificación definitiva).
-    const applyEdit = (edit: TaxNotice): TaxNotice => {
-      const dl = calculateAEATDeadlines(edit.modelo, edit.periodo, edit.ejercicio);
-      const result: TaxNotice = {
-        ...edit,
-        fechaCargo: dl.fechaCargo.toISOString(),
-        fechaLimiteDomiciliacion: dl.fechaLimiteDomiciliacion.toISOString(),
-      };
-      result.verificacion = buildVerification(result, [], edit.verificacion?.segundaLecturaHecha ?? false);
-      return result;
-    };
-
-    // Los impuestos quitados en el editor se eliminan de verdad (antes se
-    // quedaban en la lista al guardar) y se borra su captura del disco.
+    // Tras una edición manual: recalcular fechas y comprobaciones.
     const editedIds = new Set(updatedJoint.notices.map((n) => n.id));
     const originalIds = new Set(groupNotices(rawNotices, groupingOverrides).find((joint) => joint.id === updatedJoint.id)?.notices.map((notice) => notice.id) || []);
     const belongsToGroup = (n: TaxNotice) => originalIds.has(n.id);
+    // Los impuestos quitados en el editor se eliminan de verdad y se borra su captura.
     rawNotices
       .filter((n) => belongsToGroup(n) && !editedIds.has(n.id))
       .forEach((n) => deleteCaptureFromDisk(n.screenshotId));
 
     const kept = rawNotices.filter((n) => !belongsToGroup(n) || editedIds.has(n.id));
-
     const updatedNotices = kept.map((raw) => {
       const matchingEdit = updatedJoint.notices.find(n => n.id === raw.id);
-      return matchingEdit ? applyEdit(matchingEdit) : raw;
+      return matchingEdit ? applyManualEdit(matchingEdit) : raw;
     });
-
-    // Also add any new manual taxes that might be added inside NoticeEditor
-    const existingIds = rawNotices.map(r => r.id);
-    const addedTaxes = updatedJoint.notices.filter(n => !existingIds.includes(n.id)).map(applyEdit);
+    const existingIds = new Set(rawNotices.map(r => r.id));
+    const addedTaxes = updatedJoint.notices.filter(n => !existingIds.has(n.id)).map((notice) => applyManualEdit(notice));
 
     const finalNotices = [...updatedNotices, ...addedTaxes];
     editorDraftRef.current = null;
     saveNoticesToLocal(finalNotices);
     setEditingJointId(null);
+    const edited = finalNotices.find((notice) => editedIds.has(notice.id));
+    if (edited) setSelectedJointId(normalizeNifKey(edited.cliente_nif, edited.cliente_nombre));
+    notify('Datos actualizados.', { tone: 'success' });
   };
 
-  const handleDeleteClientGroup = (jointId: string) => {
-    if (confirm("¿Está seguro de que desea eliminar todas las declaraciones de este cliente?")) {
-      const noticeIds = new Set(groupNotices(rawNotices, groupingOverrides).find((joint) => joint.id === jointId)?.notices.map((notice) => notice.id) || []);
-      const removed = rawNotices.filter((notice) => noticeIds.has(notice.id));
-      removed.forEach((n) => deleteCaptureFromDisk(n.screenshotId));
-      const updated = rawNotices.filter((notice) => !noticeIds.has(notice.id));
-      saveNoticesToLocal(updated);
-    }
+  // Descartar y vaciar se pueden deshacer durante unos segundos; las capturas
+  // solo se borran del disco cuando ya no se puede deshacer.
+  const removeWithUndo = (removed: TaxNotice[], message: string) => {
+    if (removed.length === 0) return;
+    const removedIds = new Set(removed.map((notice) => notice.id));
+    saveNoticesToLocal(rawNoticesRef.current.filter((notice) => !removedIds.has(notice.id)));
+    let undone = false;
+    const timer = setTimeout(() => {
+      if (!undone) removed.forEach((notice) => deleteCaptureFromDisk(notice.screenshotId));
+    }, DISCARD_UNDO_MS + 500);
+    notify(message, {
+      duration: DISCARD_UNDO_MS,
+      action: {
+        label: 'Deshacer',
+        run: () => {
+          undone = true;
+          clearTimeout(timer);
+          const current = new Set(rawNoticesRef.current.map((notice) => notice.id));
+          saveNoticesToLocal([...removed.filter((notice) => !current.has(notice.id)), ...rawNoticesRef.current]);
+        },
+      },
+    });
   };
 
-  const handleClearAll = () => {
-    if (confirm("¿Seguro que desea limpiar todas las declaraciones cargadas?")) {
-      rawNotices.forEach((n) => deleteCaptureFromDisk(n.screenshotId));
-      saveNoticesToLocal([]);
-    }
+  const handleDiscard = (joint: JointNotice) => {
+    removeWithUndo(joint.notices, `Aviso de ${joint.cliente_nombre || 'cliente sin nombre'} descartado.`);
   };
 
-  const copyNoticeImage = async (joint: JointNotice) => {
-    const surface = document.querySelector(`[data-export-surface="${CSS.escape(joint.id)}"]`);
-    const card = surface?.firstElementChild?.firstElementChild as HTMLElement | null;
-    if (!card) throw new Error('No se encuentra la ficha para exportar.');
-    const options = { pixelRatio: 2, backgroundColor: '#FBF9F5', cacheBust: true, skipFonts: true };
-    await toBlob(card, options);
-    const blob = await toBlob(card, options);
-    if (!blob) throw new Error('No se pudo generar la imagen.');
-    await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+  const handleClearAll = async () => {
+    const ok = await confirm({
+      title: 'Vaciar la bandeja',
+      message: `Se quitarán los ${groupedNotices.length} avisos en curso. Podrá deshacerlo durante unos segundos.`,
+      confirmLabel: 'Vaciar',
+      danger: true,
+    });
+    if (ok) removeWithUndo(rawNoticesRef.current, 'Bandeja vaciada.');
   };
 
   const archiveJoint = async (joint: JointNotice) => {
@@ -772,7 +656,8 @@ export default function App() {
       periods: Array.from(new Set(joint.notices.map((notice) => notice.periodo))),
       noticeIds: joint.notices.map((notice) => notice.id),
       captureIds: joint.notices.flatMap((notice) => notice.screenshotId ? [notice.screenshotId] : []),
-      snapshot: joint,
+      // Sin miniaturas: el historial solo necesita los datos y el id de la captura.
+      snapshot: { ...joint, notices: joint.notices.map(({ screenshotUrl: _thumbnail, ...rest }) => rest) },
     };
     if (!archivedNoticesRef.current.some((item) => item.id === archive.id)) {
       archivedNoticesRef.current = [archive, ...archivedNoticesRef.current];
@@ -782,26 +667,54 @@ export default function App() {
     const active = rawNoticesRef.current.filter((notice) => !removedIds.has(notice.id));
     rawNoticesRef.current = active;
     setRawNotices(active);
+    // Se quitan solo las capturas de este aviso. No se rehidrata la bandeja:
+    // eso devolvería a «pendiente» las capturas que se están leyendo en paralelo.
+    const archivedItems = queueItemsRef.current.filter((item) => item.jointId === joint.id);
     const remainingQueue = queueItemsRef.current.filter((item) => item.jointId !== joint.id);
     queueItemsRef.current = remainingQueue;
-    captureQueue.hydrate(remainingQueue);
+    archivedItems.forEach((item) => captureQueue.remove(item.id));
     await persistWorkspace(remainingQueue, active);
+    return archive;
   };
 
-  const handleCompleteAndContinue = async (joint: JointNotice, mode: 'text' | 'image') => {
+  const handleReopen = (archive: ArchivedNotice) => {
+    const snapshot = archive.snapshot as JointNotice;
+    const existing = new Set(rawNoticesRef.current.map((notice) => notice.id));
+    const active = [...snapshot.notices.filter((notice) => !existing.has(notice.id)).map((notice) => withDeadlines(notice)), ...rawNoticesRef.current];
+    const history = archivedNoticesRef.current.filter((item) => item.id !== archive.id);
+    rawNoticesRef.current = active;
+    archivedNoticesRef.current = history;
+    setRawNotices(active);
+    setArchivedNotices(history);
+    selectedJointIdRef.current = snapshot.id;
+    setSelectedJointId(snapshot.id);
+    setHistoryOpen(false);
+    void persistWorkspace(queueItemsRef.current, active).catch(() => {});
+  };
+
+  const handleCompleteAndContinue = async (joint: JointNotice) => {
+    if (!(await confirmIfNeedsReview(joint))) return;
+    let archived: ArchivedNotice | null = null;
     try {
       const next = await completeAndContinue({
         joint,
-        mode,
+        mode: view,
         exportText: copyWhatsAppText,
         exportImage: copyNoticeImage,
-        archive: archiveJoint,
+        archive: async (item) => { archived = await archiveJoint(item); },
         pendingJointIds: groupedNotices.map((item) => item.id),
       });
       setSelectedJointId(next);
+      setEditingJointId(null);
+      const undoArchive = archived as ArchivedNotice | null;
+      notify(`${view === 'image' ? 'Imagen copiada' : 'Texto copiado'} y aviso archivado.`, {
+        tone: 'success',
+        detail: next ? 'Pasando al siguiente aviso.' : 'No quedan más avisos en curso.',
+        action: undoArchive ? { label: 'Deshacer', run: () => handleReopen(undoArchive) } : undefined,
+      });
     } catch (error) {
       console.error(error);
-      alert(`No se pudo completar el aviso: ${error instanceof Error ? error.message : String(error)}`);
+      notify('No se pudo completar el aviso.', { tone: 'error', detail: error instanceof Error ? error.message : String(error) });
     }
   };
 
@@ -819,28 +732,18 @@ export default function App() {
     void persistWorkspace().catch(() => {});
   };
 
-  const handleReopen = (archive: ArchivedNotice) => {
-    const snapshot = archive.snapshot as JointNotice;
-    const existing = new Set(rawNoticesRef.current.map((notice) => notice.id));
-    const active = [...snapshot.notices.filter((notice) => !existing.has(notice.id)), ...rawNoticesRef.current];
-    const history = archivedNoticesRef.current.filter((item) => item.id !== archive.id);
-    rawNoticesRef.current = active;
-    archivedNoticesRef.current = history;
-    setRawNotices(active);
-    setArchivedNotices(history);
-    selectedJointIdRef.current = snapshot.id;
-    setSelectedJointId(snapshot.id);
-    void persistWorkspace(queueItemsRef.current, active).catch(() => {});
+  const openCapture = (notice: TaxNotice) => {
+    if (notice.screenshotId) window.open('/api/capturas/' + notice.screenshotId, '_blank');
+    else if (notice.screenshotUrl) window.open(notice.screenshotUrl, '_blank');
   };
 
-  // Handle manual file drag & drop events
-  const [isDragOver, setIsDragOver] = useState(false);
   const handleDragOver = (e: React.DragEvent) => {
+    if (!Array.from(e.dataTransfer.types).includes('Files')) return;
     e.preventDefault();
     setIsDragOver(true);
   };
-  const handleDragLeave = () => {
-    setIsDragOver(false);
+  const handleDragLeave = (e: React.DragEvent) => {
+    if (!e.relatedTarget || !(e.currentTarget as Node).contains(e.relatedTarget as Node)) setIsDragOver(false);
   };
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
@@ -852,1058 +755,293 @@ export default function App() {
   const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (files && files.length > 0) void enqueueFiles(Array.from(files));
+    e.target.value = '';
   };
 
-  const workspaceRedesignEnabled = true;
-
-  if (workspaceRedesignEnabled) {
-    return (
-      <div className="workspace-shell h-screen min-h-[720px] overflow-hidden bg-[#F5F8FC] text-[#24384D] flex flex-col">
-        <div
-          data-workspace-region="header"
-          className="h-11 flex-none bg-white text-[#24384D] border-b border-[#DCE5F0] flex items-center gap-2 px-4 pr-40 select-none"
-          style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
-        >
-          <img src={appIcon} alt="" className="w-7 h-7 object-contain" />
-          <span className="text-sm font-semibold">Generador de Avisos Fiscales</span>
-        </div>
-
-        <div className="h-10 flex-none bg-white border-b border-stone-200 flex items-center justify-between px-3 relative z-40">
-          <div className="flex items-center h-full" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-            <div className="relative h-full flex items-center">
-              <button data-open={openMenu === 'file'} onClick={() => setOpenMenu(openMenu === 'file' ? null : 'file')} className="workspace-menu-trigger h-full px-3 text-sm flex items-center gap-1.5">
-                <span>Archivo</span>
-                <ChevronDown className="w-3.5 h-3.5" />
-              </button>
-              {openMenu === 'file' && (
-                <div className="absolute top-full left-0 w-56 bg-white border border-stone-200 rounded-b-lg shadow-xl p-1.5 z-50">
-                  <button onClick={() => { setOpenMenu(null); handleReadClipboard(); }} className="workspace-menu-item w-full px-3 py-2 text-xs rounded flex items-center gap-2">
-                    <Clipboard className="w-4 h-4" /><span className="flex-1 text-left">Pegar captura</span><kbd className="text-[10px] text-stone-400">Ctrl+V</kbd>
-                  </button>
-                  <button onClick={() => { setOpenMenu(null); document.getElementById('workspace-file-input')?.click(); }} className="workspace-menu-item w-full px-3 py-2 text-xs rounded flex items-center gap-2">
-                    <Upload className="w-4 h-4" /><span>Abrir imagen...</span>
-                  </button>
-                  <div className="h-px bg-stone-100 my-1" />
-                  <button onClick={() => { setOpenMenu(null); loadExampleData(); }} className="workspace-menu-item w-full px-3 py-2 text-xs rounded flex items-center gap-2">
-                    <Sparkles className="w-4 h-4" /><span>Cargar ejemplo</span>
-                  </button>
-                </div>
-              )}
-            </div>
-
-            <div className="relative h-full flex items-center">
-              <button data-open={openMenu === 'edit'} onClick={() => setOpenMenu(openMenu === 'edit' ? null : 'edit')} className="workspace-menu-trigger h-full px-3 text-sm flex items-center gap-1.5">
-                <span>Editar</span>
-                <ChevronDown className="w-3.5 h-3.5" />
-              </button>
-              {openMenu === 'edit' && (
-                <div className="absolute top-full left-0 w-64 bg-white border border-stone-200 rounded-b-lg shadow-xl p-1.5 z-50">
-                  <button disabled={!selectedJoint} onClick={() => { if (selectedJoint) setEditingJointId(selectedJoint.id); setOpenMenu(null); }} className="workspace-menu-item w-full px-3 py-2 text-xs rounded flex items-center gap-2 disabled:opacity-40"><Edit2 className="w-4 h-4" /><span>Editar datos del aviso</span></button>
-                  <button onClick={() => { setShowPreferences(true); setOpenMenu(null); }} className="workspace-menu-item w-full px-3 py-2 text-xs rounded flex items-center gap-2"><Settings2 className="w-4 h-4" /><span>Preferencias de la asesor&iacute;a</span></button>
-                  <div className="h-px bg-stone-100 my-1" />
-                  <button disabled={!selectedJoint} onClick={() => { if (selectedJoint) handleDeleteClientGroup(selectedJoint.id); setOpenMenu(null); }} className="workspace-menu-item w-full px-3 py-2 text-xs rounded text-rose-600 flex items-center gap-2 disabled:opacity-40"><Trash2 className="w-4 h-4" /><span>Descartar aviso activo</span></button>
-                  <button disabled={!rawNotices.length} onClick={() => { handleClearAll(); setOpenMenu(null); }} className="workspace-menu-item w-full px-3 py-2 text-xs rounded text-rose-600 flex items-center gap-2 disabled:opacity-40"><X className="w-4 h-4" /><span>Limpiar todos</span></button>
-                </div>
-              )}
-            </div>
-
-            <div className="relative h-full flex items-center">
-              <button data-open={openMenu === 'view'} onClick={() => setOpenMenu(openMenu === 'view' ? null : 'view')} className="workspace-menu-trigger h-full px-3 text-sm flex items-center gap-1.5">
-                <span>Ver</span>
-                <ChevronDown className="w-3.5 h-3.5" />
-              </button>
-              {openMenu === 'view' && (
-                <div className="absolute top-full left-0 w-56 bg-white border border-stone-200 rounded-b-lg shadow-xl p-1.5 z-50">
-                  <button disabled={!selectedJoint} onClick={() => { if (selectedJoint) setActiveTab((prev) => ({ ...prev, [selectedJoint.id]: 'text' })); setOpenMenu(null); }} className="workspace-menu-item w-full px-3 py-2 text-xs rounded flex items-center gap-2 disabled:opacity-40"><MessageSquareText className="w-4 h-4" /><span>Texto WhatsApp</span></button>
-                  <button disabled={!selectedJoint} onClick={() => { if (selectedJoint) setActiveTab((prev) => ({ ...prev, [selectedJoint.id]: 'image' })); setOpenMenu(null); }} className="workspace-menu-item w-full px-3 py-2 text-xs rounded flex items-center gap-2 disabled:opacity-40"><ImageIcon className="w-4 h-4" /><span>Imagen del aviso</span></button>
-                  <div className="h-px bg-stone-100 my-1" />
-                  {(['A', 'B', 'C'] as CardFormat[]).map((format) => (
-                    <button key={format} data-selected={cardFormat === format} onClick={() => { handleCardFormatChange(format); setOpenMenu(null); }} className="workspace-menu-item w-full px-3 py-2 text-xs rounded flex items-center gap-2">
-                      <PanelTop className="w-4 h-4" />
-                      <span className="flex-1 text-left">Formato {format}</span>
-                      {cardFormat === format && <Check className="w-4 h-4 text-emerald-600" />}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className="relative h-full flex items-center">
-              <button data-open={historyExpanded} onClick={() => { setHistoryExpanded(!historyExpanded); setOpenMenu(null); }} className="workspace-menu-trigger h-full px-3 text-sm flex items-center gap-1.5">
-                <History className="w-3.5 h-3.5" /><span>Historial</span>
-              </button>
-            </div>
-
-            <div className="relative h-full flex items-center">
-              <button data-open={openMenu === 'help'} onClick={() => setOpenMenu(openMenu === 'help' ? null : 'help')} className="workspace-menu-trigger h-full px-3 text-sm flex items-center gap-1.5">
-                <span>Ayuda</span>
-                <ChevronDown className="w-3.5 h-3.5" />
-              </button>
-              {openMenu === 'help' && (
-                <div className="absolute top-full left-0 w-64 bg-white border border-stone-200 rounded-b-lg shadow-xl p-3 z-50">
-                  <ApiKeySettings />
-                  <div className="mt-3 pt-2 border-t border-stone-100 text-[11px] text-stone-500">
-                    Generador de Avisos Fiscales<br />
-                    Versi&oacute;n {appVersion || '...'}
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2 pr-2 text-xs text-stone-500">
-            {updateStatus && (
-              <span className="update-summary">
-                {updateStatus.status === 'downloading' && `Descargando ${Math.round(updateStatus.percent || 0)}%`}
-                {updateStatus.status === 'ready' && `Versión ${updateStatus.version || 'nueva'} lista`}
-                {updateStatus.status === 'installing' && 'Instalando actualización'}
-                {updateStatus.status === 'error' && 'Actualización pendiente de reintento'}
-                {updateStatus.status === 'checking' && (updateStatus.message || 'Comprobando actualizaciones')}
-              </span>
-            )}
-            {updateStatus?.status === 'ready' && (
-              <button type="button" className="update-restart" onClick={() => void window.updates?.restart()}>
-                Reiniciar y actualizar
-              </button>
-            )}
-            <span>Versi&oacute;n {appVersion || '...'}</span>
-          </div>
-        </div>
-
-        <input id="workspace-file-input" type="file" accept="image/*" multiple className="hidden" onChange={handleFileInputChange} />
-
-        <div className="flex-none bg-white border-b border-stone-200 px-5 py-2">
-          <div className="mx-auto flex max-w-[1760px] items-center gap-3">
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-sm font-bold text-[#24384D]">
-                {selectedJoint ? selectedJoint.cliente_nombre : 'Nuevo aviso fiscal'}
-              </div>
-              <div className="text-[10px] text-stone-400">
-                {selectedJoint
-                  ? `${selectedJoint.notices.length} ${selectedJoint.notices.length === 1 ? 'impuesto' : 'impuestos'} · ${selectedVerificationState === 'ok' ? 'datos verificados' : 'pendiente de revisión'}`
-                  : 'Pegue una captura para comenzar'}
-              </div>
-            </div>
-            {selectedJoint && (
-              <>
-                <button
-                  onClick={() => copyWhatsAppText(selectedJoint)}
-                  className="flex items-center gap-1.5 rounded-lg border border-stone-300 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-stone-50"
-                >
-                  {copiedTextId === selectedJoint.id ? <Check className="h-4 w-4 text-emerald-600" /> : <Copy className="h-4 w-4" />}
-                  {copiedTextId === selectedJoint.id ? 'Texto copiado' : 'Copiar texto'}
-                </button>
-                <button
-                  onClick={() => setActiveTab((prev) => ({ ...prev, [selectedJoint.id]: 'image' }))}
-                  className="flex items-center gap-1.5 rounded-lg border border-stone-300 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-stone-50"
-                >
-                  <ImageIcon className="h-4 w-4" /> Ver imagen
-                </button>
-              </>
-            )}
-            <button onClick={handleReadClipboard} className="flex items-center gap-2 rounded-lg bg-[#326FA6] px-4 py-2 text-xs font-bold text-white hover:bg-[#285D8D]">
-              <Clipboard className="w-4 h-4" />
-              Pegar captura
-              <kbd className="ml-1 rounded bg-white/10 px-1.5 py-0.5 text-[9px] font-normal">Ctrl+V</kbd>
-            </button>
-          </div>
-        </div>
-
-        <main className="flex-1 min-h-0 p-3 lg:p-4 flex flex-col">
-          <div data-workspace-region="queue" className="flex-none max-w-[1760px] w-full mx-auto mb-3">
-            {(storageError || captureQueue.storageError) && <div role="alert" className="border border-red-300 bg-red-50 px-4 py-2 text-sm text-red-900">No se puede guardar el trabajo: {storageError || captureQueue.storageError}. La bandeja está detenida. Conserve la aplicación abierta hasta recuperar el almacenamiento.</div>}
-            <AnimatePresence>
-              {loading && <LoaderOverlay step={loadingStep} takingLong={takingLong} inline />}
-            </AnimatePresence>
-            <CaptureQueue
-              items={captureQueue.items}
-              selectedJointId={selectedJoint?.id}
-              onRetry={captureQueue.retry}
-              onViewCapture={(fileId) => window.open(`/api/capturas/${encodeURIComponent(fileId)}`, '_blank')}
-              onSelect={(jointId) => setSelectedJointId(jointId)}
-            />
-          </div>
-          <div className="flex-1 min-h-0 grid grid-cols-[minmax(390px,0.88fr)_minmax(520px,1.12fr)] gap-3 max-w-[1760px] w-full mx-auto">
-            <section
-              data-workspace-region="input"
-              onDragOver={handleDragOver}
-              onDragLeave={handleDragLeave}
-              onDrop={handleDrop}
-              className={'h-full min-h-0 rounded-xl border bg-white shadow-sm overflow-y-auto ' + (isDragOver ? 'border-[#326FA6] ring-2 ring-[#326FA6]/15' : 'border-stone-200')}
-            >
-              <div className="px-5 py-4 border-b border-stone-200 flex items-center justify-between">
-                <div>
-                  <h2 className="flex items-center gap-2 text-lg font-bold text-[#24384D]"><FileText className="h-5 w-5" />Datos extra&iacute;dos</h2>
-                  <p className="text-[11px] text-stone-400 mt-0.5">Revise la informaci&oacute;n antes de enviarla</p>
-                </div>
-                {selectedJoint && (
-                  <span className={'inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-semibold ' + (
-                    selectedVerificationState === 'ok'
-                      ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
-                      : selectedVerificationState === 'review'
-                        ? 'bg-rose-50 border-rose-200 text-rose-700'
-                        : 'bg-amber-50 border-amber-200 text-amber-700'
-                  )}>
-                    {selectedVerificationState === 'ok' ? <ShieldCheck className="w-3.5 h-3.5" /> : <ShieldAlert className="w-3.5 h-3.5" />}
-                    {selectedVerificationState === 'ok' ? 'Datos verificados' : selectedVerificationState === 'review' ? 'Revisar datos' : 'Sin verificar'}
-                  </span>
-                )}
-              </div>
-
-              {!selectedJoint ? (
-                <div className="p-6 h-full min-h-[220px] flex items-center justify-center">
-                  <div className="max-w-sm w-full rounded-xl border-2 border-dashed border-stone-300 bg-stone-50/50 p-8 text-center">
-                    <Upload className="w-9 h-9 text-[#326FA6] mx-auto mb-3" />
-                    <h3 className="font-bold text-slate-800 mb-1">Pegue una captura para empezar</h3>
-                    <p className="text-xs text-stone-500 mb-5">Use Ctrl+V, arrastre una imagen o seleccione un archivo.</p>
-                    <button onClick={handleReadClipboard} className="w-full rounded-lg bg-[#326FA6] px-4 py-2.5 text-sm font-bold text-white">Pegar captura</button>
-                    <button onClick={() => document.getElementById('workspace-file-input')?.click()} className="mt-2 w-full rounded-lg border border-stone-300 bg-white px-4 py-2.5 text-xs font-semibold text-slate-700">Seleccionar imagen</button>
-                  </div>
-                </div>
-              ) : editingJointId === selectedJoint.id ? (
-                <div className="p-4">
-                  <NoticeEditor
-                    key={selectedJoint.id}
-                    initialDraft={editorDraftRef.current}
-                    onDraftChange={rememberDraft}
-                    notice={selectedJoint}
-                    onSave={handleEditSave}
-                    onCancel={cancelEditing}
-                  />
-                </div>
-              ) : (
-                <div className="p-5">
-                  {selectedVerificationState === 'review' && (
-                    <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-3">
-                      <div className="flex items-start gap-2.5">
-                        <ShieldAlert className="mt-0.5 h-4 w-4 flex-none text-amber-700" />
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center justify-between gap-3">
-                            <h3 className="text-xs font-bold text-amber-900">Revise estos datos antes de copiar el aviso</h3>
-                            <button onClick={() => setEditingJointId(selectedJoint.id)} className="flex-none rounded-md border border-amber-300 bg-white px-2.5 py-1 text-[10px] font-bold text-amber-800 hover:bg-amber-100">Corregir datos</button>
-                          </div>
-                          <ul className="mt-1.5 space-y-1 text-[10px] leading-relaxed text-amber-900">
-                            {selectedVerificationIssues.length > 0
-                              ? selectedVerificationIssues.map((issue, index) => <li key={index}>&bull; {issue.text}</li>)
-                              : <li>&bull; Hay datos que requieren una comprobaci&oacute;n manual.</li>}
-                          </ul>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                  {selectedVerificationState === 'unverified' && (
-                    <div className="mb-4 flex items-start gap-2.5 rounded-xl border border-stone-200 bg-stone-50 px-3.5 py-3 text-[10px] text-stone-600">
-                      <ShieldQuestion className="mt-0.5 h-4 w-4 flex-none text-stone-500" />
-                      <span>No se pudo completar la segunda lectura. Compruebe los datos con la captura antes de enviarlos.</span>
-                    </div>
-                  )}
-                  <div className="grid grid-cols-[96px_minmax(0,1fr)] gap-x-3 gap-y-2.5 items-center text-sm">
-                    <span className="text-stone-500">Cliente</span>
-                    <div className="rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 font-semibold">{selectedJoint.cliente_nombre}</div>
-                    <span className="text-stone-500">NIF</span>
-                    <div className="w-fit min-w-40 rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 font-mono">{selectedJoint.cliente_nif}</div>
-                    <span className="text-stone-500">Per&iacute;odo</span>
-                    <div className="w-fit min-w-40 rounded-lg border border-stone-200 bg-stone-50 px-3 py-2">
-                      {selectedJoint.notices[0]?.periodo} / {selectedJoint.notices[0]?.ejercicio}
-                    </div>
-                  </div>
-
-                  <div className="mt-5 border-t border-stone-200 pt-4">
-                    <div className="flex items-center justify-between mb-3 gap-3">
-                      <h3 className="font-bold text-slate-800">Impuestos incluidos &middot; {selectedJoint.notices.length}</h3>
-                      <div className="flex items-center gap-2">
-                        <button disabled={selectedJoint.notices.length < 2} onClick={() => applyGrouping(createSplitOverride(selectedJoint))} className="text-xs font-semibold text-[#326FA6] hover:underline disabled:opacity-40">Separar</button>
-                        <button disabled={!mergeCandidate} onClick={() => mergeCandidate && applyGrouping(createMergeOverride(selectedJoint, mergeCandidate))} className="text-xs font-semibold text-[#326FA6] hover:underline disabled:opacity-40">Unir con siguiente</button>
-                        <button disabled={groupingOverrides.length === 0} onClick={handleUndoGrouping} className="text-xs font-semibold text-[#326FA6] hover:underline disabled:opacity-40">Deshacer</button>
-                        <button onClick={() => setEditingJointId(selectedJoint.id)} className="text-xs font-semibold text-[#326FA6] hover:underline">Editar</button>
-                      </div>
-                    </div>
-                    <div className="space-y-2">
-                      {selectedJoint.notices.map((tax, index) => (
-                        <div key={tax.id} className="workspace-data-row grid grid-cols-[34px_62px_minmax(0,1fr)_105px_32px] gap-2.5 items-center rounded-lg border border-stone-200 px-3 py-2.5">
-                          <span className="w-8 h-8 rounded-md bg-stone-100 flex items-center justify-center text-xs font-bold">{index + 1}</span>
-                          <div><span className="block text-[9px] uppercase text-stone-400">Modelo</span><span className="font-bold">{tax.modelo}</span></div>
-                          <div className="min-w-0"><span className="block truncate font-semibold">{tax.modelo_nombre || 'Modelo ' + tax.modelo}</span><span className="mt-0.5 inline-flex rounded bg-stone-100 px-1.5 py-0.5 text-[9px] font-semibold text-stone-500">{tax.tipo_resultado}</span></div>
-                          <div className="text-right"><span className="block text-[9px] uppercase text-stone-400">Importe</span><span className="font-bold">{tax.importe.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} &euro;</span></div>
-                          <button
-                            onClick={() => tax.screenshotId ? window.open('/api/capturas/' + tax.screenshotId, '_blank') : tax.screenshotUrl && window.open(tax.screenshotUrl, '_blank')}
-                            disabled={!tax.screenshotId && !tax.screenshotUrl}
-                            title="Ver captura original"
-                            aria-label={'Ver captura original del modelo ' + tax.modelo}
-                            className="flex h-8 w-8 items-center justify-center rounded-lg border border-stone-200 bg-white text-stone-500 hover:border-[#AFC3D6] hover:bg-[#EDF4FA] hover:text-[#326FA6] disabled:cursor-not-allowed disabled:opacity-30"
-                          >
-                            <ExternalLink className="h-3.5 w-3.5" />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-
-                    <button onClick={() => document.getElementById('workspace-file-input')?.click()} className="mt-3 w-full rounded-lg border border-dashed border-stone-300 py-2.5 text-xs font-bold text-[#326FA6] hover:bg-stone-50">
-                      <Plus className="inline w-4 h-4 mr-1" /> A&ntilde;adir otra captura
-                    </button>
-                  </div>
-
-                  <div className="mt-4 border-t border-stone-200 pt-4 grid grid-cols-[145px_minmax(0,1fr)] gap-x-3 gap-y-2.5 items-center text-sm">
-                    <span className="text-stone-500">Cuenta de cargo (IBAN)</span>
-                    <div className="min-w-0 rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 font-mono">
-                      {selectedJoint.iban
-                        ? selectedJoint.iban.replace(/\s+/g, '').replace(/^(.{4}).*(.{4})$/, '$1 **** **** $2')
-                        : 'No disponible'}
-                    </div>
-                    <span className="text-stone-500">Fecha de cargo</span>
-                    <div className="min-w-0 rounded-lg border border-stone-200 bg-stone-50 px-3 py-2">
-                      {selectedChargeDate ? formatDateSpanish(selectedChargeDate) : 'No disponible'}
-                    </div>
-                  </div>
-
-                  <div className="mt-6 flex items-center justify-between">
-                    <button onClick={() => handleDeleteClientGroup(selectedJoint.id)} className="flex items-center gap-1.5 rounded-lg border border-rose-200 bg-white px-4 py-2.5 text-xs font-semibold text-rose-600 hover:bg-rose-50"><Trash2 className="h-4 w-4" />Descartar</button>
-                    <button onClick={() => setEditingJointId(selectedJoint.id)} className="rounded-lg bg-[#326FA6] px-6 py-2.5 text-sm font-bold text-white hover:bg-[#285D8D]">
-                      <Edit2 className="inline w-4 h-4 mr-1.5" /> Editar datos
-                    </button>
-                  </div>
-                </div>
-              )}
-            </section>
-
-            <section data-workspace-region="result" className="h-full min-h-0 rounded-xl border border-stone-200 bg-white shadow-sm overflow-y-auto">
-              <div className="px-5 py-4 border-b border-stone-200">
-                <h2 className="flex items-center gap-2 text-lg font-bold text-[#24384D]"><ImageIcon className="h-5 w-5" />Resultado para el cliente</h2>
-                <p className="text-[11px] text-stone-400 mt-0.5">Copie el texto o la imagen lista para WhatsApp</p>
-              </div>
-
-              {!selectedJoint ? (
-                <div className="h-full min-h-[220px] flex flex-col items-center justify-center text-center p-8">
-                  <ImageIcon className="w-12 h-12 text-stone-300 mb-3" />
-                  <h3 className="font-semibold text-slate-700">Todav&iacute;a no hay un aviso</h3>
-                  <p className="text-xs text-stone-400 mt-1">La vista previa aparecer&aacute; cuando procese una captura.</p>
-                </div>
-              ) : (
-                <>
-                  <div className="px-5 pt-3 border-b border-stone-200 flex gap-7">
-                    <button aria-selected={selectedTab === 'text'} onClick={() => setActiveTab((prev) => ({ ...prev, [selectedJoint.id]: 'text' }))} className={'flex items-center gap-1.5 rounded-t-lg border-b px-3 pb-2.5 pt-1 text-sm font-semibold ' + (selectedTab === 'text' ? 'border-[#326FA6] bg-[#EDF4FA] text-[#326FA6]' : 'border-transparent text-stone-500 hover:bg-stone-50 hover:text-slate-700')}><MessageSquareText className="h-4 w-4" />Texto WhatsApp</button>
-                    <button aria-selected={selectedTab === 'image'} onClick={() => setActiveTab((prev) => ({ ...prev, [selectedJoint.id]: 'image' }))} className={'flex items-center gap-1.5 rounded-t-lg border-b px-3 pb-2.5 pt-1 text-sm font-semibold ' + (selectedTab === 'image' ? 'border-[#326FA6] bg-[#EDF4FA] text-[#326FA6]' : 'border-transparent text-stone-500 hover:bg-stone-50 hover:text-slate-700')}><ImageIcon className="h-4 w-4" />Imagen</button>
-                  </div>
-
-                  {selectedTab === 'text' ? (
-                    <div className="p-5">
-                      <div className="relative rounded-xl border border-stone-200 bg-stone-50 p-4 pt-14 min-h-[430px]">
-                        <button onClick={() => copyWhatsAppText(selectedJoint)} className="absolute top-3 right-3 rounded-lg border border-stone-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-stone-50">
-                          {copiedTextId === selectedJoint.id ? <Check className="inline w-4 h-4 mr-1 text-emerald-600" /> : <Copy className="inline w-4 h-4 mr-1" />}
-                          {copiedTextId === selectedJoint.id ? 'Copiado' : 'Copiar texto'}
-                        </button>
-                        <pre className="whitespace-pre-wrap font-mono text-[13px] leading-relaxed text-slate-700">{generateWhatsAppText(selectedJoint)}</pre>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => void handleCompleteAndContinue(selectedJoint, 'text')}
-                        className="mt-3 w-full rounded-lg bg-[#19724E] px-4 py-2.5 text-sm font-bold text-white"
-                      >
-                        Copiar, archivar y continuar
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="p-4">
-                      <div className={'mb-3 rounded-xl border px-4 py-3 ' + (selectedJoint.mostrarNotaAsesoria ? 'border-[#AFC3D6] bg-[#F7FAFD]' : 'border-stone-200 bg-stone-50')}>
-                        <label className="flex items-center gap-3 cursor-pointer rounded-lg">
-                          <input
-                            type="checkbox"
-                            checked={!!selectedJoint.mostrarNotaAsesoria}
-                            onChange={(event) => handleAdvisoryNoteChange(selectedJoint.id, event.target.checked, selectedJoint.notaAsesoria || '')}
-                            className="w-4 h-4 accent-[#326FA6] cursor-pointer"
-                          />
-                          <MessageSquareText className="w-4 h-4 text-[#326FA6]" />
-                          <span className="text-xs font-bold text-slate-700">A&ntilde;adir nota al pie del aviso</span>
-                          {!selectedJoint.mostrarNotaAsesoria && <span className="ml-auto text-[10px] text-stone-400">Desactivada por defecto</span>}
-                        </label>
-                        {selectedJoint.mostrarNotaAsesoria && (
-                          <div className="mt-3 border-t border-[#DCE5EF] pt-3">
-                            <div className="mb-2 flex items-center justify-between">
-                              <span className="text-[10px] font-bold uppercase tracking-wide text-stone-500">Frases r&aacute;pidas</span>
-                              <span className="text-[10px] text-stone-400">Elija una y ed&iacute;tela si lo necesita</span>
-                            </div>
-                            <div className="grid grid-cols-3 gap-2">
-                              {ADVISORY_NOTE_PRESETS.map((preset) => {
-                                const PresetIcon = preset.icon;
-                                const isSelected = activeAdvisoryPresetId === preset.id;
-                                return (
-                                  <button
-                                    key={preset.id}
-                                    type="button"
-                                    aria-pressed={isSelected}
-                                    onClick={() => handleAdvisoryNoteChange(selectedJoint.id, true, preset.text)}
-                                    className={'workspace-selectable relative min-h-20 rounded-lg border p-2.5 text-left ' + (isSelected ? 'border-[#326FA6] bg-[#EBF3FA] text-[#326FA6] ring-1 ring-[#326FA6]/20' : 'border-stone-200 bg-white text-slate-600')}
-                                  >
-                                    <PresetIcon className="mb-2 h-4 w-4" />
-                                    <span className="block pr-4 text-[10px] font-bold">{preset.label}</span>
-                                    <span className="mt-1 block text-[9px] leading-snug opacity-75">{preset.text}</span>
-                                    {isSelected && <Check className="absolute right-2 top-2 h-3.5 w-3.5 text-emerald-600" />}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                            <label className="mt-3 block text-[10px] font-bold uppercase tracking-wide text-stone-500">Texto editable</label>
-                            <div className="relative mt-1.5">
-                              <textarea
-                                value={selectedJoint.notaAsesoria || ''}
-                                onChange={(event) => handleAdvisoryNoteChange(selectedJoint.id, true, event.target.value)}
-                                maxLength={240}
-                                rows={2}
-                                placeholder="Escriba la nota que aparecer&aacute; en el pie del aviso."
-                                className="w-full resize-y rounded-lg border border-stone-200 bg-white px-3 py-2 pr-14 text-xs focus:border-[#326FA6] focus:outline-none focus:ring-2 focus:ring-[#326FA6]/10"
-                              />
-                              <span className="absolute bottom-2 right-2 text-[9px] text-stone-400">{(selectedJoint.notaAsesoria || '').length}/240</span>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-
-                      <div className="rounded-xl border border-stone-100 bg-[#fbfaf8] px-3 py-4 overflow-x-auto flex justify-center">
-                        <div data-export-surface={selectedJoint.id}>
-                          <NoticeCard notice={selectedJoint} format={cardFormat} />
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => void handleCompleteAndContinue(selectedJoint, 'image')}
-                        className="mt-3 w-full rounded-lg bg-[#19724E] px-4 py-2.5 text-sm font-bold text-white"
-                      >
-                        Copiar, archivar y continuar
-                      </button>
-                    </div>
-                  )}
-                </>
-              )}
-            </section>
-          </div>
-
-          <section data-workspace-region="history" className="flex-none max-w-[1760px] w-full mx-auto mt-3 rounded-xl border border-stone-200 bg-white shadow-sm overflow-hidden">
-            <button onClick={() => setHistoryExpanded(!historyExpanded)} className="w-full flex items-center justify-between px-4 py-3 text-left">
-              <span className="flex items-center gap-2 text-sm font-bold text-slate-700">
-                <History className="w-4 h-4 text-[#326FA6]" />
-                Registro de hoy &middot; {groupedNotices.length} avisos
-              </span>
-              <span className="flex items-center gap-1 text-xs font-semibold text-stone-500">{historyExpanded ? 'Ocultar' : 'Mostrar'}{historyExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}</span>
-            </button>
-            {historyExpanded && groupedNotices.length > 0 && (
-              <div className="border-t border-stone-200 px-3 py-3 flex gap-2 overflow-x-auto">
-                {groupedNotices.map((joint) => {
-                  const timestamp = joint.notices[0]?.timestamp;
-                  const isReady = joint.notices.every((notice) => notice.verificacion?.estado === 'ok');
-                  const isActive = selectedJoint?.id === joint.id;
-                  return (
-                    <button
-                      key={joint.id} data-selected={isActive}
-                      onClick={() => { setSelectedJointId(joint.id); setEditingJointId(null); }}
-                      className={'workspace-selectable min-w-[245px] rounded-lg border px-3 py-2 text-left ' + (isActive ? 'border-[#326FA6] bg-[#EDF4FA] ring-1 ring-[#326FA6]/20 shadow-sm' : 'border-stone-200 bg-white')}
-                    >
-                      <div className="flex items-center gap-2">
-                        <span className="text-[10px] text-stone-400">{timestamp ? new Date(timestamp).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }) : '--:--'}</span>
-                        <span className={'w-2 h-2 rounded-full ' + (isReady ? 'bg-emerald-500' : 'bg-amber-400')} />
-                        <span className="truncate text-xs font-bold text-slate-700">{joint.cliente_nombre}</span>
-                      </div>
-                      <div className="mt-1 pl-14 text-[10px] text-stone-500">
-                        {joint.notices.length} {joint.notices.length === 1 ? 'impuesto' : 'impuestos'} &middot; {isReady ? 'Listo' : 'Pendiente'}
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </section>
-
-          {historyExpanded && (
-            <div className="flex-none max-w-[1760px] w-full mx-auto mt-3">
-              <NoticeHistory
-                items={archivedNotices}
-                onReopen={handleReopen}
-                onViewCapture={(captureId) => window.open(`/api/capturas/${captureId}`, '_blank')}
-              />
-            </div>
-          )}
-        </main>
-
-        {showPreferences && (
-          <div className="fixed inset-0 z-[70] bg-slate-950/45 flex items-center justify-center p-4">
-            <div className="w-full max-w-lg rounded-2xl bg-white shadow-2xl border border-stone-200 p-6">
-              <div className="flex items-center justify-between mb-5">
-                <div>
-                  <h2 className="text-lg font-bold text-[#24384D]">Preferencias de la asesor&iacute;a</h2>
-                  <p className="text-xs text-stone-400">Datos generales y formato favorito</p>
-                </div>
-                <button onClick={() => setShowPreferences(false)} className="flex items-center gap-1.5 rounded-lg border border-stone-200 px-3 py-1.5 text-xs font-semibold hover:bg-stone-50"><X className="h-3.5 w-3.5" />Cerrar</button>
-              </div>
-
-              <label className="block text-xs font-bold text-stone-600 mb-1">Nombre de la asesor&iacute;a</label>
-              <input value={agencyName} onChange={(event) => handleAgencyNameChange(event.target.value)} className="w-full rounded-lg border border-stone-200 px-3 py-2 text-sm mb-4" />
-
-              <label className="block text-xs font-bold text-stone-600 mb-2">Formato de la ficha</label>
-              <div className="grid grid-cols-3 gap-2 mb-4">
-                {([
-                  { id: 'A' as CardFormat, label: 'Equilibrado' },
-                  { id: 'B' as CardFormat, label: 'Recibo' },
-                  { id: 'C' as CardFormat, label: 'Una ojeada' },
-                ]).map((option) => (
-                  <button
-                    key={option.id}
-                    onClick={() => handleCardFormatChange(option.id)}
-                    className={'rounded-lg border px-3 py-3 text-xs font-bold ' + (cardFormat === option.id ? 'bg-[#326FA6] border-[#326FA6] text-white' : 'border-stone-200 bg-stone-50 text-slate-600')}
-                  >
-                    {option.id}<span className="block mt-1 text-[10px] font-normal">{option.label}</span>
-                  </button>
-                ))}
-              </div>
-
-              <label className="block text-xs font-bold text-stone-600 mb-1">Firma de WhatsApp</label>
-              <textarea value={signatureText} onChange={(event) => handleSignatureChange(event.target.value)} rows={4} className="w-full rounded-lg border border-stone-200 px-3 py-2 text-sm font-mono" />
-            </div>
-          </div>
-        )}
-      </div>
-    );
-  }
+  const reviewCount = groupedNotices.filter((joint) => jointState(joint) === 'review').length;
+  const pendingCaptures = captureQueue.items.filter((item) => item.status === 'pending').length;
+  const failedCaptures = captureQueue.items.filter((item) => item.status === 'failed').length;
+  const modelLabel = aiConfig?.recommendedModels?.find((model) => model.id === aiConfig.model)?.label || aiConfig?.model || '';
+  const activeNotePreset = selectedJoint
+    ? ADVISORY_NOTE_PRESETS.find((preset) => preset.text === (selectedJoint.notaAsesoria || '').trim())?.id
+    : undefined;
 
   return (
-    <div className="min-h-screen bg-slate-50/50 pb-20">
-      <AnimatePresence>
-        {loading && <LoaderOverlay step={loadingStep} takingLong={takingLong} />}
-      </AnimatePresence>
-
-      {/* Header Bar */}
-      <header className="bg-white border-b border-slate-100 sticky top-0 z-40 shadow-xs">
-        <div className="max-w-5xl mx-auto px-4 py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-slate-900 flex items-center justify-center text-white shadow-md shadow-slate-900/10">
-              <Clipboard className="w-5 h-5" />
-            </div>
-            <div>
-              <h1 className="font-display text-lg font-bold text-slate-900 tracking-tight leading-tight flex items-center gap-2">
-                Generador de Avisos Fiscales
-                {appVersion && (
-                  <span className="px-1.5 py-0.5 rounded bg-slate-100 border border-slate-200 text-[10px] font-mono font-semibold text-slate-500">
-                    v{appVersion}
-                  </span>
-                )}
-              </h1>
-              <p className="text-slate-500 text-[11px] font-medium">
-                Confección de mensajes y recibos oficiales de impuestos
-              </p>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <ApiKeySettings />
-            <button
-              onClick={loadExampleData}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-100 transition-all"
-              id="btn-load-demo"
-            >
-              <Sparkles className="w-3.5 h-3.5" />
-              <span>Ver Ejemplo de Prueba</span>
-            </button>
-            {rawNotices.length > 0 && (
-              <button
-                onClick={handleClearAll}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg text-rose-600 bg-rose-50 hover:bg-rose-100 border border-rose-100 transition-colors"
-                id="btn-clear-all"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>Limpiar</span>
-              </button>
-            )}
-          </div>
-        </div>
+    <div
+      className="workspace-shell"
+      data-dragging={isDragOver}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      <header data-workspace-region="header" className="titlebar" style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}>
+        <img src={appIcon} alt="" className="titlebar-icon" />
+        <span className="titlebar-title">Generador de Avisos Fiscales</span>
+        {selectedJoint && <span className="titlebar-doc">— {selectedJoint.cliente_nombre || 'Aviso sin nombre'}</span>}
       </header>
 
-      <main className="max-w-5xl mx-auto px-4 mt-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
-        
-        {/* Left column: Setup, copy/paste active drop zone, AEAT rules card */}
-        <div className="lg:col-span-4 space-y-6">
-          
-          {/* Drag, Drop, and Paste Interactive Zone */}
-          <div
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
-            className={`relative overflow-hidden rounded-2xl border-2 border-dashed p-6 text-center transition-all ${
-              isDragOver 
-                ? 'border-slate-800 bg-slate-100/50 scale-[1.01]' 
-                : 'border-slate-200 bg-white hover:border-slate-400'
-            }`}
-          >
-            <div className="flex flex-col items-center">
-              <div className="w-12 h-12 rounded-xl bg-slate-50 flex items-center justify-center text-slate-700 mb-4 border border-slate-100">
-                <Upload className="w-6 h-6 animate-pulse text-slate-600" />
-              </div>
-              <h3 className="font-display font-bold text-sm text-slate-800 mb-1">
-                Portapapeles Activo
-              </h3>
-              <p className="text-xs text-slate-400 max-w-[240px] mb-4 leading-relaxed">
-                Usa <kbd className="px-1.5 py-0.5 bg-slate-100 border border-slate-200 rounded font-mono text-[10px] text-slate-600 shadow-xs">Impr Pant</kbd> en Windows para capturar, haz clic aquí y pulsa <kbd className="px-1.5 py-0.5 bg-slate-100 border border-slate-200 rounded font-mono text-[10px] text-slate-600 shadow-xs">Ctrl+V</kbd>.
-              </p>
+      <div data-workspace-region="ribbon">
+        <Ribbon
+          hasSelection={!!selectedJoint}
+          hasNotices={rawNotices.length > 0}
+          canSplit={!!selectedJoint && selectedJoint.notices.length > 1}
+          canUndoGrouping={groupingOverrides.length > 0}
+          onPaste={handleReadClipboard}
+          onOpenFile={() => fileInputRef.current?.click()}
+          onCopyImage={() => selectedJoint && void handleCopyImage(selectedJoint)}
+          onCopyText={() => selectedJoint && void handleCopyText(selectedJoint)}
+          onDownload={() => selectedJoint && void downloadNoticeImage(selectedJoint)}
+          onComplete={() => selectedJoint && void handleCompleteAndContinue(selectedJoint)}
+          onEdit={() => selectedJoint && setEditingJointId(selectedJoint.id)}
+          onSplit={() => selectedJoint && applyGrouping(createSplitOverride(selectedJoint))}
+          onUndoGrouping={handleUndoGrouping}
+          onDiscard={() => selectedJoint && handleDiscard(selectedJoint)}
+          onClearAll={() => void handleClearAll()}
+          onHistory={() => setHistoryOpen(true)}
+          onCalendar={() => setSettingsTab('calendario')}
+          onSettings={() => setSettingsTab('general')}
+          onExample={loadExampleData}
+        />
+      </div>
 
-              <button
-                onClick={handleReadClipboard}
-                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-bold text-white bg-slate-800 hover:bg-slate-900 rounded-lg transition-all shadow-xs"
-                id="btn-paste-clipboard"
-              >
-                <Clipboard className="w-4 h-4" />
-                <span>Pegar automáticamente</span>
-              </button>
+      <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden" onChange={handleFileInputChange} />
 
-              <div className="relative mt-3.5 flex items-center w-full justify-center">
-                <span className="text-[10px] text-slate-400 bg-white px-2 z-10 font-bold uppercase tracking-wider">o también</span>
-                <div className="absolute w-full h-[1px] bg-slate-100"></div>
-              </div>
-
-              <label className="mt-3 cursor-pointer text-xs text-slate-700 hover:text-slate-900 font-semibold underline">
-                selecciona un archivo de imagen
-                <input
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  className="hidden"
-                  onChange={handleFileInputChange}
-                />
-              </label>
-            </div>
-          </div>
-
-          {/* Config: Advisory agency parameters */}
-          <div className="bg-white rounded-2xl border border-slate-100 p-5 shadow-xs">
-            <div className="flex items-center gap-2 mb-3.5 pb-2.5 border-b border-slate-50">
-              <Sliders className="w-4.5 h-4.5 text-slate-800" />
-              <h2 className="font-display font-bold text-sm text-slate-800">
-                Datos de tu Asesoría
-              </h2>
-            </div>
-            
-            <div className="space-y-4">
-              <div>
-                <label className="block text-[11px] font-bold text-slate-500 mb-1 uppercase tracking-wider">
-                  Nombre de tu Asesoría
-                </label>
-                <input
-                  type="text"
-                  className="w-full px-3 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-slate-800 bg-slate-50/50"
-                  value={agencyName}
-                  onChange={(e) => handleAgencyNameChange(e.target.value)}
-                  placeholder="Ej. Asesoría E. Marín"
-                />
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-bold text-slate-500 mb-1.5 uppercase tracking-wider">
-                  Formato de la ficha (imagen)
-                </label>
-                <div className="grid grid-cols-3 gap-2">
-                  {([
-                    { id: 'A' as CardFormat, name: 'Equilibrado' },
-                    { id: 'B' as CardFormat, name: 'Recibo' },
-                    { id: 'C' as CardFormat, name: 'Una ojeada' },
-                  ]).map((f) => {
-                    const isFav = cardFormat === f.id;
-                    return (
-                      <button
-                        key={f.id}
-                        onClick={() => handleCardFormatChange(f.id)}
-                        className={`relative px-2 py-2 rounded-lg border text-center transition-all ${
-                          isFav
-                            ? 'border-slate-800 bg-slate-800 text-white'
-                            : 'border-slate-200 bg-slate-50/50 text-slate-600 hover:border-slate-400'
-                        }`}
-                        id={`btn-format-${f.id}`}
-                        title={isFav ? 'Formato favorito (se usa siempre)' : 'Marcar como favorito'}
-                      >
-                        <Star
-                          className={`absolute top-1.5 right-1.5 w-3 h-3 ${isFav ? 'text-amber-400' : 'text-slate-300'}`}
-                          fill={isFav ? 'currentColor' : 'none'}
-                        />
-                        <span className="block text-sm font-bold">{f.id}</span>
-                        <span className="block text-[10px] font-medium mt-0.5 leading-tight">{f.name}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-                <p className="text-[10px] text-slate-400 mt-1.5 flex items-center gap-1">
-                  <Star className="w-2.5 h-2.5 text-amber-400" fill="currentColor" />
-                  <span>El formato con estrella se usa siempre en todas las fichas hasta que elijas otro.</span>
-                </p>
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-bold text-slate-500 mb-1 uppercase tracking-wider">
-                  Firma de WhatsApp
-                </label>
-                <textarea
-                  className="w-full px-3 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-slate-800 bg-slate-50/50 h-16 font-mono"
-                  value={signatureText}
-                  onChange={(e) => handleSignatureChange(e.target.value)}
-                  placeholder="Atentamente,\nMaldonado Consultores"
-                />
-              </div>
-            </div>
-          </div>
-
-          {/* AEAT Deadline regulations informational card */}
-          <div className="bg-slate-900 text-slate-200 rounded-2xl p-5 shadow-sm relative overflow-hidden">
-            <div className="absolute -right-6 -bottom-6 w-24 h-24 bg-slate-800 rounded-full opacity-20"></div>
-            <div className="flex items-start gap-2.5 mb-3">
-              <Calendar className="w-5 h-5 text-emerald-400 shrink-0" />
-              <div>
-                <h3 className="font-display font-bold text-xs text-white uppercase tracking-wider">
-                  Plazos Oficiales AEAT
-                </h3>
-                <p className="text-[10px] text-slate-400 mt-0.5">
-                  Calendario de domiciliaciones fiscales
-                </p>
-              </div>
-            </div>
-
-            <div className="space-y-2.5 text-[11px] border-t border-slate-800 pt-3">
-              <div className="flex justify-between">
-                <span className="text-slate-400 font-medium">1T (Ene - Mar):</span>
-                <span className="font-semibold text-emerald-400">Cargo el 20 de Abril</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-400 font-medium">2T (Abr - Jun):</span>
-                <span className="font-semibold text-emerald-400">Cargo el 20 de Julio</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-400 font-medium">3T (Jul - Sep):</span>
-                <span className="font-semibold text-emerald-400">Cargo el 20 de Octubre</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-400 font-medium">4T (Oct - Dic):</span>
-                <span className="font-semibold text-emerald-400">Cargo el 30 de Enero</span>
-              </div>
-            </div>
-
-            <div className="bg-slate-800/50 rounded-lg p-2.5 mt-3.5 flex gap-2 border border-slate-800">
-              <Info className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-              <p className="text-[10px] text-slate-300 leading-relaxed">
-                Si el día de cargo o límite cae en sábado, domingo o festivo nacional, el sistema de esta app lo desplaza automáticamente al siguiente día hábil.
-              </p>
-            </div>
-          </div>
-
+      {(storageError || captureQueue.storageError) && (
+        <div role="alert" className="banner" data-tone="danger">
+          No se puede guardar el trabajo: {storageError || captureQueue.storageError} La bandeja está detenida hasta que se recupere el almacenamiento.
         </div>
+      )}
+      {aiConfig && aiConfig.hasApiKey === false && (
+        <div className="banner" data-tone="warning">
+          Falta la clave de Gemini para leer capturas.
+          <button type="button" className="btn btn-small" onClick={() => setSettingsTab('ia')}>Configurar clave</button>
+        </div>
+      )}
 
-        {/* Right column: Main active notice queue and unified groups */}
-        <div className="lg:col-span-8 space-y-6">
-          <div className="flex items-center justify-between">
-            <h2 className="font-display font-bold text-base text-slate-900 flex items-center gap-2">
-              <FileText className="w-5 h-5 text-slate-800" />
-              <span>Avisos Activos ({groupedNotices.length} Clientes)</span>
-            </h2>
-            <span className="text-xs font-mono text-slate-400">
-              LocalStorage activo
-            </span>
+      <main className="workspace">
+        <aside data-workspace-region="queue" className="pane sidebar">
+          <CaptureQueue
+            items={captureQueue.items}
+            selectedJointId={selectedJoint?.id}
+            onRetry={captureQueue.retry}
+            onRemove={captureQueue.remove}
+            onViewCapture={(fileId) => window.open(`/api/capturas/${encodeURIComponent(fileId)}`, '_blank')}
+            onSelect={(jointId) => setSelectedJointId(jointId)}
+          />
+          <NoticeList
+            joints={groupedNotices}
+            selectedId={selectedJoint?.id}
+            onSelect={(id) => { setSelectedJointId(id); setEditingJointId(null); }}
+          />
+        </aside>
+
+        <section data-workspace-region="input" className="pane pane-details" aria-label="Datos extraídos">
+          <div className="pane-header">
+            <h2>Datos extraídos</h2>
+            <span className="pane-subtitle">Revise la información antes de enviarla</span>
           </div>
-
-          {groupedNotices.length === 0 ? (
-            <div className="bg-white rounded-2xl border border-slate-100 p-12 text-center shadow-xs">
-              <div className="w-16 h-16 rounded-full bg-slate-50 flex items-center justify-center text-slate-400 mx-auto mb-4 border border-slate-100">
-                <Clipboard className="w-6 h-6" />
+          <div className="pane-body">
+            {!selectedJoint ? (
+              <div className="empty-state">
+                <div className="drop-target" data-active={isDragOver}>
+                  <Upload aria-hidden="true" />
+                  <h3>Pegue una captura para empezar</h3>
+                  <p>Haga una captura de la declaración en A3, Sage o la Sede de la AEAT y pulse <kbd>Ctrl</kbd>+<kbd>V</kbd> en esta ventana. También puede arrastrar varias imágenes a la vez.</p>
+                  <div className="empty-actions">
+                    <button type="button" className="btn btn-primary" onClick={handleReadClipboard}>Pegar captura</button>
+                    <button type="button" className="btn" onClick={() => fileInputRef.current?.click()}>Abrir imagen…</button>
+                  </div>
+                </div>
               </div>
-              <h3 className="font-display font-bold text-sm text-slate-800 mb-1">
-                Ninguna captura o aviso cargado
-              </h3>
-              <p className="text-xs text-slate-400 max-w-sm mx-auto mb-6 leading-relaxed">
-                Carga una captura del programa tributario o pulsa el botón "Ver Ejemplo de Prueba" para visualizar cómo se confecciona y calcula un aviso completo.
-              </p>
-              <button
-                onClick={loadExampleData}
-                className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-slate-800 hover:bg-slate-900 rounded-lg transition-all"
-                id="btn-load-demo-empty"
-              >
-                <Sparkles className="w-3.5 h-3.5" />
-                <span>Cargar Ejemplo de Prueba</span>
+            ) : editingJointId === selectedJoint.id ? (
+              <NoticeEditor
+                key={selectedJoint.id}
+                initialDraft={editorDraftRef.current}
+                onDraftChange={rememberDraft}
+                notice={selectedJoint}
+                onSave={handleEditSave}
+                onCancel={cancelEditing}
+              />
+            ) : (
+              <NoticeDetails
+                joint={selectedJoint}
+                canUndoGrouping={groupingOverrides.length > 0}
+                onEdit={() => setEditingJointId(selectedJoint.id)}
+                onSplit={() => applyGrouping(createSplitOverride(selectedJoint))}
+                onUndoGrouping={handleUndoGrouping}
+                onAddCapture={() => fileInputRef.current?.click()}
+                onViewCapture={openCapture}
+                onDiscard={() => handleDiscard(selectedJoint)}
+              />
+            )}
+          </div>
+        </section>
+
+        <section data-workspace-region="result" className="pane pane-preview" aria-label="Resultado para el cliente">
+          <div className="pane-header">
+            <div className="tabs" role="tablist">
+              <button type="button" role="tab" aria-selected={view === 'image'} data-active={view === 'image'} onClick={() => setView('image')}>
+                <ImageIcon aria-hidden="true" /> Ficha en imagen
+              </button>
+              <button type="button" role="tab" aria-selected={view === 'text'} data-active={view === 'text'} onClick={() => setView('text')}>
+                <MessageSquareText aria-hidden="true" /> Texto WhatsApp
               </button>
             </div>
-          ) : (
-            <div className="space-y-6">
-              {groupedNotices.map((joint) => {
-                const currentTab = activeTab[joint.id] || 'text';
-                const isEditing = editingJointId === joint.id;
-
-                // Estado de verificación del grupo: el peor de sus avisos.
-                const verifState = (() => {
-                  let revisar = false, sinVerificar = false;
-                  joint.notices.forEach((n) => {
-                    const v = n.verificacion;
-                    if (!v || v.estado === 'sin-verificar') sinVerificar = true;
-                    else if (v.estado === 'revisar') revisar = true;
-                  });
-                  return revisar ? 'revisar' : sinVerificar ? 'sin-verificar' : 'ok';
-                })();
-
-                const verifIssues = joint.notices.flatMap((n) => {
-                  const v = n.verificacion;
-                  if (!v) return [];
-                  const prefix = joint.notices.length > 1 ? `Modelo ${n.modelo}: ` : '';
-                  const checks = v.checks
-                    .filter((c) => c.status !== 'ok')
-                    .map((c) => ({ level: c.status, text: `${prefix}${c.message}` }));
-                  const discrepancies = (v.discrepanciasIA || []).map((d) => ({
-                    level: 'error' as const,
-                    text: `${prefix}${FIELD_LABELS[d.campo] || d.campo}: las dos lecturas de la IA no coinciden («${d.primera}» frente a «${d.segunda}»). Compare con la captura.`,
-                  }));
-                  return [...checks, ...discrepancies];
-                });
-
-                return (
-                  <motion.div
-                    key={joint.id}
-                    layout
-                    initial={{ opacity: 0, y: 12 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, scale: 0.95 }}
-                    className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden"
-                  >
-                    
-                    {/* Header of the client block */}
-                    <div className="p-5 border-b border-slate-100 flex flex-col sm:flex-row justify-between sm:items-center gap-4 bg-slate-50/20">
-                      <div>
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <h3 className="font-display font-bold text-slate-950 text-sm leading-tight">
-                            {joint.cliente_nombre}
-                          </h3>
-                          <span className="px-2 py-0.5 rounded bg-slate-100 border border-slate-200 text-[10px] font-bold text-slate-600 uppercase font-mono">
-                            {joint.cliente_nif}
-                          </span>
-                          {verifState === 'ok' && (
-                            <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-[10px] font-bold text-emerald-700" title="Checksums de IBAN/NIF correctos y doble lectura de la IA coincidente">
-                              <ShieldCheck className="w-3 h-3" />
-                              Datos verificados
-                            </span>
-                          )}
-                          {verifState === 'revisar' && (
-                            <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-50 border border-rose-200 text-[10px] font-bold text-rose-700" title="Hay datos que no superan la comprobación. Revise antes de enviar.">
-                              <ShieldAlert className="w-3 h-3" />
-                              Revisar datos
-                            </span>
-                          )}
-                          {verifState === 'sin-verificar' && (
-                            <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-50 border border-slate-200 text-[10px] font-bold text-slate-500" title="No se pudo hacer la verificación automática (aviso antiguo, manual o fallo de red)">
-                              <ShieldQuestion className="w-3 h-3" />
-                              Sin verificar
-                            </span>
-                          )}
-                        </div>
-                        
-                        <p className="text-xs text-slate-500 mt-1 flex items-center gap-1.5 flex-wrap">
-                          <span>{joint.notices.length} {joint.notices.length === 1 ? 'declaración cargada' : 'declaraciones unificadas'}</span>
-                          <span className="text-slate-300">•</span>
-                          <span className="text-[11px] font-mono text-stone-600 bg-stone-100/50 px-1.5 rounded">
-                            Total: {joint.total_importe.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €
-                          </span>
-                        </p>
-                      </div>
-
-                      <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
-                        <button
-                          onClick={() => setEditingJointId(isEditing ? null : joint.id)}
-                          className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors"
-                          id={`btn-edit-toggle-${joint.id}`}
-                        >
-                          <Edit2 className="w-3.5 h-3.5" />
-                          <span>{isEditing ? 'Cancelar' : 'Editar Datos'}</span>
-                        </button>
-                        
-                        <button
-                          onClick={() => handleDeleteClientGroup(joint.id)}
-                          className="p-1.5 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg transition-colors"
-                          title="Eliminar este cliente"
-                          id={`btn-delete-group-${joint.id}`}
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Detalle de la verificación cuando hay algo que revisar */}
-                    {verifIssues.length > 0 && (
-                      <div className="px-5 py-3 bg-rose-50/40 border-b border-rose-100">
-                        <div className="flex items-center gap-1.5 mb-1.5">
-                          <ShieldAlert className="w-4 h-4 text-rose-600" />
-                          <span className="text-xs font-bold text-rose-700">Comprobaciones sobre los datos capturados</span>
-                        </div>
-                        <ul className="space-y-1 pl-1">
-                          {verifIssues.map((issue, i) => (
-                            <li key={i} className={`text-[11px] leading-relaxed flex gap-1.5 ${issue.level === 'error' ? 'text-rose-700' : 'text-amber-700'}`}>
-                              <span className="shrink-0">{issue.level === 'error' ? '✖' : '⚠'}</span>
-                              <span>{issue.text}</span>
-                            </li>
-                          ))}
-                        </ul>
-                        <p className="text-[10px] text-slate-500 mt-1.5">
-                          Compare con la captura asociada (abajo) y corrija con «Editar Datos». Al guardar, las comprobaciones se recalculan.
-                        </p>
-                      </div>
-                    )}
-
-                    {/* Editor view if active */}
-                    {isEditing ? (
-                      <div className="p-5 border-b border-slate-50 bg-slate-50/10">
-                        <NoticeEditor
-                          key={joint.id}
-                          initialDraft={editorDraftRef.current}
-                          onDraftChange={rememberDraft}
-                          notice={joint}
-                          onSave={handleEditSave}
-                          onCancel={cancelEditing}
-                        />
-                      </div>
-                    ) : null}
-
-                    {/* Interactive presentation zone */}
-                    <div className="p-5">
-                      
-                      {/* Tabs to toggle format */}
-                      <div className="flex border-b border-slate-100 mb-5 gap-4">
-                        <button
-                          onClick={() => setActiveTab(prev => ({ ...prev, [joint.id]: 'text' }))}
-                          className={`pb-2 text-xs font-bold flex items-center gap-1.5 border-b-2 transition-all ${
-                            currentTab === 'text'
-                              ? 'border-slate-800 text-slate-900'
-                              : 'border-transparent text-slate-400 hover:text-slate-600'
-                          }`}
-                          id={`tab-text-${joint.id}`}
-                        >
-                          <FileText className="w-4 h-4" />
-                          <span>Vista WhatsApp (Texto)</span>
-                        </button>
-                        
-                        <button
-                          onClick={() => setActiveTab(prev => ({ ...prev, [joint.id]: 'image' }))}
-                          className={`pb-2 text-xs font-bold flex items-center gap-1.5 border-b-2 transition-all ${
-                            currentTab === 'image'
-                              ? 'border-slate-800 text-slate-900'
-                              : 'border-transparent text-slate-400 hover:text-slate-600'
-                          }`}
-                          id={`tab-img-${joint.id}`}
-                        >
-                          <ImageIcon className="w-4 h-4" />
-                          <span>Vista Tarjeta (Imagen)</span>
-                        </button>
-                      </div>
-
-                      {currentTab === 'text' ? (
-                        <div className="space-y-4">
-                          <div className="bg-slate-50 rounded-xl p-4 border border-slate-100 relative">
-                            <pre className="text-[13px] text-slate-800 font-mono whitespace-pre-wrap leading-relaxed max-w-full overflow-x-auto">
-                              {generateWhatsAppText(joint)}
-                            </pre>
-                            
-                            <button
-                              onClick={() => copyWhatsAppText(joint)}
-                              className="absolute top-4 right-4 flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-md shadow-xs transition-all bg-white border border-slate-200 text-slate-700 hover:bg-slate-50"
-                              id={`btn-copy-wa-${joint.id}`}
-                            >
-                              {copiedTextId === joint.id ? (
-                                <>
-                                  <Check className="w-3 h-3 text-emerald-500" />
-                                  <span>¡Copiado!</span>
-                                </>
-                              ) : (
-                                <>
-                                  <Copy className="w-3 h-3" />
-                                  <span>Copiar Texto</span>
-                                </>
-                              )}
-                            </button>
-                          </div>
-                          
-                          <p className="text-[10px] text-slate-400 italic flex items-center gap-1">
-                            <span>💡 Tip:</span>
-                            <span>Este texto está optimizado con negritas (*) para que luzca perfecto y sea legible al enviarlo por WhatsApp.</span>
-                          </p>
-                        </div>
-                      ) : (
-                        <div className="flex flex-col items-center">
-                          <div className="w-full max-w-xl mb-4 rounded-xl border border-slate-200 bg-slate-50/70 p-3">
-                            <label className="flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer">
-                              <input
-                                type="checkbox"
-                                checked={!!joint.mostrarNotaAsesoria}
-                                onChange={(e) => handleAdvisoryNoteChange(joint.id, e.target.checked, joint.notaAsesoria || '')}
-                                className="w-4 h-4 accent-slate-800"
-                              />
-                              <span>{'A\u00f1adir nota manual al pie de la imagen'}</span>
-                            </label>
-                            {joint.mostrarNotaAsesoria && (
-                              <div className="mt-2">
-                                <textarea
-                                  value={joint.notaAsesoria || ''}
-                                  onChange={(e) => handleAdvisoryNoteChange(joint.id, true, e.target.value)}
-                                  maxLength={240}
-                                  rows={3}
-                                  placeholder={'Ej.: Av\u00edsenos si quiere solicitar un aplazamiento.'}
-                                  className="w-full resize-y rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700 focus:border-slate-400 focus:outline-none"
-                                />
-                                <div className="mt-1 text-right text-[10px] text-slate-400">
-                                  {(joint.notaAsesoria || '').length}/240
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                          <NoticeCard
-                            notice={joint}
-                            format={cardFormat}
-                          />
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Screenshot thumbnails footer if images are available */}
-                    {joint.notices.some(n => n.screenshotUrl) && (
-                      <div className="px-5 py-3 bg-slate-50 border-t border-slate-100 flex items-center gap-3 overflow-x-auto">
-                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider shrink-0">
-                          Capturas asociadas:
-                        </span>
-                        <div className="flex gap-2">
-                          {joint.notices.map((tax) => {
-                            if (!tax.screenshotUrl) return null;
+            {selectedJoint && (
+              <div className="pane-actions">
+                {view === 'image' && (
+                  <div className="ribbon-segmented" role="radiogroup" aria-label="Formato de la ficha" title="Formato de la ficha">
+                    {(['A', 'B', 'C'] as CardFormat[]).map((format) => (
+                      <button key={format} type="button" role="radio" aria-checked={preferences.cardFormat === format} data-active={preferences.cardFormat === format} onClick={() => handleCardFormatChange(format)}>
+                        {format}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {view === 'image' ? (
+                  <button type="button" className="btn btn-small" title="Copiar imagen" onClick={() => void handleCopyImage(selectedJoint)}>
+                    {copied === 'image' ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />} <span className="btn-label">{copied === 'image' ? 'Copiada' : 'Copiar imagen'}</span>
+                  </button>
+                ) : (
+                  <button type="button" className="btn btn-small" title="Copiar texto" onClick={() => void handleCopyText(selectedJoint)}>
+                    {copied === 'text' ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />} <span className="btn-label">{copied === 'text' ? 'Copiado' : 'Copiar texto'}</span>
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+          <div className="pane-body preview-body">
+            {!selectedJoint ? (
+              <div className="empty-state">
+                <ImageIcon aria-hidden="true" className="empty-icon" />
+                <h3>Todavía no hay ningún aviso</h3>
+                <p>La vista previa aparecerá al leer la primera captura.</p>
+              </div>
+            ) : (
+              <>
+                {view === 'text' && (
+                  <pre className="whatsapp-preview">{generateWhatsAppText(selectedJoint)}</pre>
+                )}
+                {/* La ficha se monta siempre (oculta en la vista de texto) para poder copiarla desde la cinta. */}
+                <div className={view === 'image' ? 'card-stage' : 'card-stage card-stage-hidden'} aria-hidden={view !== 'image'}>
+                  <div data-export-surface={selectedJoint.id}>
+                    <NoticeCard notice={selectedJoint} format={preferences.cardFormat} />
+                  </div>
+                </div>
+                {view === 'image' && (
+                  <div className="note-box" data-active={!!selectedJoint.mostrarNotaAsesoria}>
+                    <label className="check">
+                      <input
+                        type="checkbox"
+                        checked={!!selectedJoint.mostrarNotaAsesoria}
+                        onChange={(event) => handleAdvisoryNoteChange(selectedJoint.id, event.target.checked, selectedJoint.notaAsesoria || '')}
+                      />
+                      Añadir una nota al pie de la ficha
+                    </label>
+                    {selectedJoint.mostrarNotaAsesoria && (
+                      <>
+                        <div className="note-presets">
+                          {ADVISORY_NOTE_PRESETS.map((preset) => {
+                            const PresetIcon = preset.icon;
                             return (
-                              <div 
-                                key={tax.id} 
-                                className="relative w-12 h-10 rounded border border-slate-200 overflow-hidden bg-white shrink-0 group cursor-pointer"
-                                title={`Modelo ${tax.modelo} (${tax.ejercicio})`}
-                                onClick={() => {
-                                  // La original en disco si existe; si no (aviso antiguo), la miniatura.
-                                  if (tax.screenshotId) {
-                                    window.open('/api/capturas/' + tax.screenshotId, '_blank');
-                                  } else {
-                                    const win = window.open();
-                                    if (win) win.document.write(`<img src="${tax.screenshotUrl}" style="max-width:100%"/>`);
-                                  }
-                                }}
+                              <button
+                                key={preset.id}
+                                type="button"
+                                aria-pressed={activeNotePreset === preset.id}
+                                data-active={activeNotePreset === preset.id}
+                                onClick={() => handleAdvisoryNoteChange(selectedJoint.id, true, preset.text)}
                               >
-                                <img 
-                                  src={tax.screenshotUrl} 
-                                  alt="Captura" 
-                                  className="w-full h-full object-cover group-hover:scale-105 transition-transform"
-                                />
-                                <div className="absolute inset-0 bg-slate-900/10 group-hover:bg-transparent"></div>
-                                <div className="absolute bottom-0 right-0 bg-slate-900 text-white text-[7px] font-bold px-0.5 rounded-tl">
-                                  {tax.modelo}
-                                </div>
-                              </div>
+                                <PresetIcon aria-hidden="true" /> {preset.label}
+                              </button>
                             );
                           })}
                         </div>
-                      </div>
+                        <div className="note-input">
+                          <textarea
+                            value={selectedJoint.notaAsesoria || ''}
+                            onChange={(event) => handleAdvisoryNoteChange(selectedJoint.id, true, event.target.value)}
+                            maxLength={240}
+                            rows={2}
+                            placeholder="Escriba la nota que aparecerá al pie de la ficha."
+                          />
+                          <span>{(selectedJoint.notaAsesoria || '').length}/240</span>
+                        </div>
+                      </>
                     )}
-
-                  </motion.div>
-                );
-              })}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+          {selectedJoint && (
+            <div className="pane-footer">
+              <button type="button" className="btn btn-success btn-block" onClick={() => void handleCompleteAndContinue(selectedJoint)}>
+                Copiar {view === 'image' ? 'imagen' : 'texto'}, archivar y pasar al siguiente
+              </button>
             </div>
           )}
-
-        </div>
+        </section>
       </main>
+
+      <footer data-workspace-region="status" className="statusbar">
+        <span>{groupedNotices.length} {groupedNotices.length === 1 ? 'aviso' : 'avisos'}</span>
+        {reviewCount > 0 && <span className="status-warning">{reviewCount} por revisar</span>}
+        {(processingCount > 0 || pendingCaptures > 0) && (
+          <span className="status-busy">
+            <LoaderCircle className="is-spinning" aria-hidden="true" />
+            Leyendo {processingCount || 1}{pendingCaptures > 0 ? ` · ${pendingCaptures} en espera` : ''}
+          </span>
+        )}
+        {failedCaptures > 0 && <span className="status-danger">{failedCaptures} con error</span>}
+        <span className="statusbar-spacer" />
+        {modelLabel && <button type="button" className="status-link" onClick={() => setSettingsTab('ia')}>IA: {modelLabel}{aiConfig && aiConfig.concurrency > 1 ? ` · ${aiConfig.concurrency} a la vez` : ''}</button>}
+        {updateStatus && (
+          <span>
+            {updateStatus.status === 'downloading' && `Descargando actualización ${Math.round(updateStatus.percent || 0)}%`}
+            {updateStatus.status === 'ready' && `Versión ${updateStatus.version || 'nueva'} lista`}
+            {updateStatus.status === 'installing' && 'Instalando actualización'}
+            {updateStatus.status === 'error' && 'Actualización pendiente de reintento'}
+            {updateStatus.status === 'checking' && (updateStatus.message || 'Comprobando actualizaciones')}
+          </span>
+        )}
+        {updateStatus?.status === 'ready' && (
+          <button type="button" className="status-link status-strong" onClick={() => void window.updates?.restart()}>Reiniciar y actualizar</button>
+        )}
+        <span>Versión {appVersion || '…'}</span>
+      </footer>
+
+      {isDragOver && (
+        <div className="drop-overlay" aria-hidden="true">
+          <Upload />
+          <span>Suelte las capturas para leerlas</span>
+        </div>
+      )}
+
+      {historyOpen && (
+        <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setHistoryOpen(false); }}>
+          <div className="dialog dialog-history" role="dialog" aria-modal="true" aria-label="Historial">
+            <NoticeHistory
+              items={archivedNotices}
+              onReopen={handleReopen}
+              onViewCapture={(captureId) => window.open(`/api/capturas/${captureId}`, '_blank')}
+              onClose={() => setHistoryOpen(false)}
+            />
+          </div>
+        </div>
+      )}
+
+      <SettingsDialog
+        open={settingsTab !== null}
+        initialTab={settingsTab || 'general'}
+        preferences={preferences}
+        aiConfig={aiConfig}
+        appVersion={appVersion}
+        onClose={() => setSettingsTab(null)}
+        onSavePreferences={handleSavePreferences}
+        onAiConfigChanged={setAiConfig}
+      />
+      <ConfirmDialog pending={feedback.pending} onAnswer={feedback.answer} />
+      <ToastStack toasts={feedback.toasts} onDismiss={feedback.dismiss} />
     </div>
   );
 }

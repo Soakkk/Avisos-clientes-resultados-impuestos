@@ -65,19 +65,12 @@ export function createStorageRouter(repository: NoticeRepository, clientDirector
     }
   });
 
-  router.get('/api/backup/export', async (_request, response, next) => {
+  router.get('/api/clients/:nif', async (request, response, next) => {
     try {
-      response.setHeader('Content-Disposition', `attachment; filename="avisos-fiscales-${new Date().toISOString().slice(0, 10)}.json"`);
-      response.json(await repository.exportBackup());
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  router.post('/api/backup/import', async (request, response, next) => {
-    try {
-      await repository.importBackup(request.body);
-      response.status(204).end();
+      if (!clientDirectory) return response.status(404).end();
+      const found = await clientDirectory.lookup(String(request.params.nif || ''));
+      if (!found) return response.status(404).end();
+      response.json({ nombre: found.nombre || '', iban: found.iban || '' });
     } catch (error) {
       next(error);
     }

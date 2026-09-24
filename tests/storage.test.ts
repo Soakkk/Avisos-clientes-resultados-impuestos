@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import express from 'express';
 import { ClientDirectory } from '../src/storage/clientDirectory';
-import { NoticeRepository } from '../src/storage/noticeRepository';
+import { MAX_ARCHIVED_NOTICES, NoticeRepository } from '../src/storage/noticeRepository';
 import { createStorageRouter } from '../src/storage/router';
 import type { ArchivedNotice, NoticeState } from '../src/storage/types';
 
@@ -196,62 +196,9 @@ test('la búsqueda de almacenamiento normaliza nombre y filtra modelo periodo y 
   assert.deepEqual((await repository.search({ from: '2026-09-01', to: '2026-09-30' })).map((item) => item.id), ['joint-1']);
 });
 
-test('exportar e importar copia de seguridad restaura avisos clientes y capturas', async () => {
-  const sourceRoot = await makeRoot();
-  const source = new NoticeRepository(path.join(sourceRoot, 'avisos'), path.join(sourceRoot, 'clientes.json'));
-  const state = emptyState();
-  state.archivedNotices = [notice({ captureIds: ['capture-1'], snapshot: jointSnapshot() })];
-  await source.saveQueue(state);
-  await source.writeCapture('capture-1', Buffer.from('imagen-original'));
-  const directory = new ClientDirectory(path.join(sourceRoot, 'clientes.json'));
-  await directory.mergeVerified({
-    nif: '12345678Z',
-    fields: { nombre: { value: 'José Pérez', verified: true } },
-  }, 'avisos-fiscales');
-
-  const backup = await source.exportBackup();
-  const destinationRoot = await makeRoot();
-  const destination = new NoticeRepository(path.join(destinationRoot, 'avisos'), path.join(destinationRoot, 'clientes.json'));
-  await destination.importBackup(backup);
-
-  assert.deepEqual(await destination.loadQueue(), state);
-  assert.equal(await readFile(path.join(destinationRoot, 'avisos', 'capturas', 'capture-1.png'), 'utf8'), 'imagen-original');
-  assert.match(await readFile(path.join(destinationRoot, 'clientes.json'), 'utf8'), /José Pérez/);
-});
-
-test('una importación que agota el disco conserva el estado y los originales anteriores', async () => {
+test('la API de almacenamiento guarda archiva y busca', async () => {
   const root = await makeRoot();
-  const repository = new NoticeRepository(root, path.join(root, 'clientes.json'));
-  const before = { ...emptyState(), activeNotices: [{ id: 'anterior', screenshotId: 'original' }] };
-  await repository.saveQueue(before);
-  await repository.writeCapture('original', Buffer.from('original anterior'));
-  repository.writeCapture = async () => { throw new Error('ENOSPC'); };
-  await assert.rejects(repository.importBackup({
-    manifest: { product: 'avisos-fiscales', schemaVersion: 1, exportedAt: '' },
-    state: { ...emptyState(), activeNotices: [taxNotice({ id: 'nuevo', screenshotId: 'original' })] },
-    clients: null, captures: { original: Buffer.from('nueva imagen').toString('base64') },
-  }), /ENOSPC/);
-  assert.deepEqual(await repository.loadQueue(), before);
-  assert.equal(await readFile(path.join(root, 'capturas/original.png'), 'utf8'), 'original anterior');
-});
-
-test('recuperar una importación interrumpida repone workspace y directorio juntos', async () => {
-  const root = await makeRoot();
-  const clientsFile = path.join(root, 'clientes.json');
-  const repository = new NoticeRepository(root, clientsFile);
-  const before = { ...emptyState(), activeNotices: [{ id: 'anterior' }] };
-  const oldClients = { schema_version: 1, clientes: { A: { nombre: 'Anterior' } } };
-  await repository.saveQueue({ ...emptyState(), activeNotices: [{ id: 'importado-a-medias' }] });
-  await writeFile(clientsFile, JSON.stringify({ schema_version: 1, clientes: {} }));
-  await writeFile(path.join(root, 'pending-import.json'), JSON.stringify({ state: before, clients: oldClients }));
-  assert.deepEqual(await repository.loadQueue(), before);
-  assert.deepEqual(JSON.parse(await readFile(clientsFile, 'utf8')), oldClients);
-  assert.ok(!(await readdir(root)).includes('pending-import.json'));
-});
-
-test('la API de almacenamiento guarda archiva busca y restaura copias', async () => {
-  const root = await makeRoot();
-  const repository = new NoticeRepository(root, path.join(root, 'clientes.json'));
+  const repository = new NoticeRepository(root);
   const directory = new ClientDirectory(path.join(root, 'clientes.json'));
   const application = express();
   application.use(express.json({ limit: '20mb' }));
@@ -281,11 +228,7 @@ test('la API de almacenamiento guarda archiva busca y restaura copias', async ()
     const matches = await (await fetch(`${base}/api/notices/search?query=jose&model=303`)).json();
     assert.deepEqual(matches.map((item: ArchivedNotice) => item.id), ['joint-1']);
 
-    const backup = await (await fetch(`${base}/api/backup/export`)).json();
-    assert.equal(backup.manifest.schemaVersion, 1);
-    assert.equal((await fetch(`${base}/api/backup/import`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(backup),
-    })).status, 204);
+    assert.equal((await fetch(`${base}/api/backup/export`)).status, 404);
   } finally {
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
@@ -319,4 +262,44 @@ test('la limpieza no borra originales antes de migrar localStorage', async () =>
   await utimes(path.join(root, 'capturas/antigua.png'), new Date(0), new Date(0));
   assert.deepEqual(await repository.cleanupOrphanedCaptures(1), []);
   assert.equal(await readFile(path.join(root, 'capturas/antigua.png'), 'utf8'), 'captura referenciada aún en localStorage');
+});
+
+test('el historial se guarda sin miniaturas y limitado a los avisos más recientes', async () => {
+  const root = await makeRoot();
+  const repository = new NoticeRepository(root);
+  const state = emptyState();
+  state.archivedNotices = Array.from({ length: MAX_ARCHIVED_NOTICES + 20 }, (_, index) => notice({
+    id: `joint-${index}`,
+    archivedAt: new Date(Date.UTC(2026, 0, 1) + index * 60_000).toISOString(),
+    snapshot: { ...jointSnapshot(), notices: [taxNotice({ screenshotUrl: 'data:image/jpeg;base64,' + 'A'.repeat(50_000), screenshotId: 'captura' })] },
+  }));
+  await repository.saveQueue(state);
+  const stored = await repository.loadQueue();
+  assert.equal(stored.archivedNotices.length, MAX_ARCHIVED_NOTICES);
+  assert.equal(stored.archivedNotices[0].id, `joint-${MAX_ARCHIVED_NOTICES + 19}`);
+  const firstNotice = (stored.archivedNotices[0].snapshot as { notices: Record<string, unknown>[] }).notices[0];
+  assert.equal(firstNotice.screenshotUrl, undefined);
+  assert.equal(firstNotice.screenshotId, 'captura');
+  assert.ok((await readFile(path.join(root, 'notices.json'), 'utf8')).length < 2_000_000);
+});
+
+test('el directorio no reescribe el archivo si los datos verificados no cambian', async () => {
+  const root = await makeRoot();
+  const file = path.join(root, 'clientes.json');
+  const directory = new ClientDirectory(file);
+  const input = { nif: '12345678Z', fields: { nombre: { value: 'José Pérez', verified: true } } };
+  assert.equal((await directory.mergeVerified(input, 'avisos-fiscales')).written, true);
+  const before = await readFile(file, 'utf8');
+  assert.equal((await directory.mergeVerified(input, 'avisos-fiscales')).written, false);
+  assert.equal(await readFile(file, 'utf8'), before);
+});
+
+test('el directorio devuelve el último IBAN conocido de un NIF', async () => {
+  const root = await makeRoot();
+  let clock = 0;
+  const directory = new ClientDirectory(path.join(root, 'clientes.json'), () => new Date(Date.UTC(2026, 0, 1) + (clock++) * 86_400_000));
+  await directory.mergeVerified({ nif: '12345678-Z', fields: { iban: { value: 'ES2900811016100006298239', verified: true } } }, 'avisos-fiscales');
+  await directory.mergeVerified({ nif: '12345678Z', fields: { iban: { value: 'ES7100302053091234567895', verified: true } } }, 'avisos-fiscales');
+  assert.deepEqual(await directory.lookup('12345678z'), { iban: 'ES7100302053091234567895' });
+  assert.equal(await directory.lookup('00000000T'), null);
 });

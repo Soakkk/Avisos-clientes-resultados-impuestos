@@ -90,3 +90,10 @@ test('reintentar manualmente reinicia el contador agotado de la bandeja', () => 
   assert.equal(state.items[0].status, 'pending');
   assert.equal(state.items[0].attempts, 0);
 });
+
+test('con un límite mayor la bandeja lee varias capturas a la vez sin pasarse', () => {
+  let state = queueReducer({ items: [item('1'), item('2'), item('3')] }, { type: 'start', id: '1', limit: 2 });
+  state = queueReducer(state, { type: 'start', id: '2', limit: 2 });
+  state = queueReducer(state, { type: 'start', id: '3', limit: 2 });
+  assert.deepEqual(state.items.map((entry) => entry.status), ['processing', 'processing', 'pending']);
+});

@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import type { EditorDraft } from '../editorDraft';
-import { TaxNotice, JointNotice, calculateAEATDeadlines, normalizeTaxResult } from '../types';
+import { TaxNotice, JointNotice, withDeadlines, normalizeTaxResult } from '../types';
 import { Save, Trash2, Plus, X } from 'lucide-react';
+import { jointTotals } from '../summary';
 
 interface NoticeEditorProps {
   notice: JointNotice;
@@ -30,9 +31,7 @@ export const NoticeEditor: React.FC<NoticeEditorProps> = ({ notice, onSave, onCa
       updatedTax.tipo_resultado = normalizeTaxResult(updatedTax.modelo, value);
     }
     if (field === 'modelo' || field === 'periodo' || field === 'ejercicio') {
-      const dates = calculateAEATDeadlines(updatedTax.modelo, updatedTax.periodo, updatedTax.ejercicio);
-      updatedTax.fechaCargo = dates.fechaCargo.toISOString();
-      updatedTax.fechaLimiteDomiciliacion = dates.fechaLimiteDomiciliacion.toISOString();
+      updatedTax = withDeadlines(updatedTax);
     }
     updatedTaxes[index] = updatedTax;
     setTaxes(updatedTaxes);
@@ -47,8 +46,7 @@ export const NoticeEditor: React.FC<NoticeEditorProps> = ({ notice, onSave, onCa
     const now = new Date();
     const currentQuarter = `${Math.floor(now.getMonth() / 3) + 1}T`;
     const exercise = now.getFullYear().toString();
-    const dates = calculateAEATDeadlines('303', currentQuarter, exercise);
-    const newTax: TaxNotice = {
+    const newTax: TaxNotice = withDeadlines({
       id: Math.random().toString(36).substr(2, 9),
       modelo: '303',
       modelo_nombre: 'Impuesto sobre el Valor Añadido',
@@ -59,155 +57,116 @@ export const NoticeEditor: React.FC<NoticeEditorProps> = ({ notice, onSave, onCa
       importe: 0,
       tipo_resultado: 'Domiciliación',
       iban: taxes[0]?.iban || '',
-      fechaCargo: dates.fechaCargo.toISOString(),
-      fechaLimiteDomiciliacion: dates.fechaLimiteDomiciliacion.toISOString(),
+      fechaCargo: '',
+      fechaLimiteDomiciliacion: '',
       timestamp: Date.now(),
-    };
+    });
     setTaxes([...taxes, newTax]);
   };
 
+  const [error, setError] = useState('');
+
   const handleSave = () => {
     if (!clientName.trim() || !clientNif.trim()) {
-      alert("Por favor, rellene el nombre y NIF del cliente.");
+      setError('Rellene el nombre y el NIF del cliente.');
+      return;
+    }
+    if (taxes.length === 0) {
+      setError('El aviso necesita al menos una declaración.');
       return;
     }
 
+    const cleanNif = clientNif.replace(/[\s.-]+/g, '').toUpperCase();
+    const updatedTaxes = taxes.map((t) => ({
+      ...t,
+      cliente_nombre: clientName.trim(),
+      cliente_nif: cleanNif,
+      iban: (t.iban || '').replace(/\s+/g, '').toUpperCase(),
+    }));
     const updatedJointNotice: JointNotice = {
       ...notice,
-      cliente_nombre: clientName,
-      cliente_nif: clientNif,
-      notices: taxes.map(t => ({
-        ...t,
-        cliente_nombre: clientName,
-        cliente_nif: clientNif,
-      })),
-      total_importe: taxes.reduce((acc, curr) => acc + curr.importe, 0),
-      iban: taxes.find(t => t.iban)?.iban || '',
-      todosDomiciliados: taxes.length > 0 && taxes.every(t => t.tipo_resultado === 'Domiciliación'),
+      cliente_nombre: clientName.trim(),
+      cliente_nif: cleanNif,
+      notices: updatedTaxes,
+      ...jointTotals(updatedTaxes),
     };
     onSave(updatedJointNotice);
   };
 
   return (
-    <div className="bg-stone-50 rounded-xl p-5 border border-stone-200 mt-4">
-      <div className="flex justify-between items-center mb-4">
-        <h4 className="font-display font-bold text-sm text-slate-900">Editar Datos del Aviso</h4>
-        <button 
-          onClick={onCancel}
-          className="text-slate-400 hover:text-slate-600 p-1"
-          id="btn-cancel-edit"
-        >
-          <X className="w-4 h-4" />
+    <div className="editor">
+      <div className="section-heading">
+        <h3>Editar datos del aviso</h3>
+        <button type="button" onClick={onCancel} className="icon-btn" id="btn-cancel-edit" aria-label="Cerrar sin guardar">
+          <X aria-hidden="true" />
         </button>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-        <div>
-          <label className="block text-xs font-semibold text-stone-600 mb-1">Nombre Completo Cliente</label>
-          <input
-            type="text"
-            className="w-full px-3 py-1.5 text-xs border border-stone-300 rounded-lg focus:outline-slate-800 bg-white"
-            value={clientName}
-            onChange={(e) => setClientName(e.target.value)}
-          />
-        </div>
-        <div>
-          <label className="block text-xs font-semibold text-stone-600 mb-1">NIF / CIF</label>
-          <input
-            type="text"
-            className="w-full px-3 py-1.5 text-xs border border-stone-300 rounded-lg focus:outline-slate-800 bg-white"
-            value={clientNif}
-            onChange={(e) => setClientNif(e.target.value)}
-          />
-        </div>
+      <div className="field-grid">
+        <label className="field">
+          <span>Nombre completo del cliente</span>
+          <input type="text" value={clientName} onChange={(e) => setClientName(e.target.value)} />
+        </label>
+        <label className="field">
+          <span>NIF / CIF / NIE</span>
+          <input type="text" className="mono" value={clientNif} onChange={(e) => setClientNif(e.target.value)} />
+        </label>
       </div>
 
-      <div className="border-t border-stone-200 pt-4 mb-4">
-        <div className="flex justify-between items-center mb-2">
-          <label className="block text-xs font-bold text-stone-700">Desglose de Impuestos</label>
-          <button
-            onClick={handleAddTax}
-            className="flex items-center gap-1 text-[11px] font-bold text-slate-800 hover:text-black"
-            id="btn-add-tax"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            <span>Añadir Impuesto</span>
-          </button>
-        </div>
+      <div className="section-heading">
+        <h3>Declaraciones</h3>
+        <button type="button" onClick={handleAddTax} className="link-btn" id="btn-add-tax">
+          <Plus aria-hidden="true" /> Añadir declaración
+        </button>
+      </div>
 
-        {taxes.length === 0 ? (
-          <p className="text-xs text-stone-500 italic py-2">No hay impuestos registrados para este cliente.</p>
-        ) : (
-          <div className="space-y-4">
-            {taxes.map((tax, index) => (
-              <div key={tax.id} className="bg-white p-3 rounded-lg border border-stone-200 relative">
+      {taxes.length === 0 ? (
+        <p className="muted">No hay declaraciones en este aviso.</p>
+      ) : (
+        <div className="editor-taxes">
+          {taxes.map((tax, index) => {
+            const needsAccount = tax.tipo_resultado === 'Domiciliación' || tax.tipo_resultado === 'Devolución';
+            const noPayment = ['A compensar', 'Resultado negativo', 'Resultado cero / Sin actividad'].includes(tax.tipo_resultado);
+            return (
+              <fieldset key={tax.id} className="editor-tax">
+                <legend>Declaración {index + 1}</legend>
                 {taxes.length > 1 && (
-                  <button
-                    onClick={() => handleRemoveTax(index)}
-                    className="absolute top-2 right-2 text-rose-500 hover:text-rose-700 p-1"
-                    title="Eliminar este impuesto"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
+                  <button type="button" onClick={() => handleRemoveTax(index)} className="icon-btn editor-remove" title="Quitar esta declaración" aria-label="Quitar esta declaración">
+                    <Trash2 aria-hidden="true" />
                   </button>
                 )}
-
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                  <div>
-                    <label className="block text-[10px] font-semibold text-stone-500 mb-0.5">Modelo</label>
-                    <input
-                      type="text"
-                      className="w-full px-2 py-1 text-xs border border-stone-300 rounded focus:outline-slate-800"
-                      value={tax.modelo}
-                      onChange={(e) => handleTaxChange(index, 'modelo', e.target.value)}
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[10px] font-semibold text-stone-500 mb-0.5">Periodo (ej. 2T, 01)</label>
-                    <input
-                      type="text"
-                      className="w-full px-2 py-1 text-xs border border-stone-300 rounded focus:outline-slate-800"
-                      value={tax.periodo}
-                      onChange={(e) => handleTaxChange(index, 'periodo', e.target.value)}
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[10px] font-semibold text-stone-500 mb-0.5">Año</label>
-                    <input
-                      type="text"
-                      className="w-full px-2 py-1 text-xs border border-stone-300 rounded focus:outline-slate-800"
-                      value={tax.ejercicio}
-                      onChange={(e) => handleTaxChange(index, 'ejercicio', e.target.value)}
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[10px] font-semibold text-stone-500 mb-0.5">Importe (€)</label>
+                <div className="field-grid field-grid-4">
+                  <label className="field">
+                    <span>Modelo</span>
+                    <input type="text" inputMode="numeric" value={tax.modelo} onChange={(e) => handleTaxChange(index, 'modelo', e.target.value.trim())} />
+                  </label>
+                  <label className="field">
+                    <span>Periodo</span>
+                    <input type="text" list="periodos-aeat" value={tax.periodo} onChange={(e) => handleTaxChange(index, 'periodo', e.target.value.toUpperCase().trim())} placeholder="1T, 01, 1P, 0A" />
+                  </label>
+                  <label className="field">
+                    <span>Ejercicio</span>
+                    <input type="text" inputMode="numeric" value={tax.ejercicio} onChange={(e) => handleTaxChange(index, 'ejercicio', e.target.value.trim())} />
+                  </label>
+                  <label className="field">
+                    <span>Importe (€)</span>
                     <input
                       type="number"
                       step="0.01"
-                      className="w-full px-2 py-1 text-xs border border-stone-300 rounded focus:outline-slate-800"
-                      value={tax.importe}
+                      className="num"
+                      value={Number.isFinite(tax.importe) ? tax.importe : 0}
                       onChange={(e) => handleTaxChange(index, 'importe', parseFloat(e.target.value) || 0)}
                     />
-                  </div>
+                  </label>
                 </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-2">
-                  <div className="sm:col-span-2">
-                    <label className="block text-[10px] font-semibold text-stone-500 mb-0.5">Concepto / Nombre del Impuesto</label>
-                    <input
-                      type="text"
-                      className="w-full px-2 py-1 text-xs border border-stone-300 rounded focus:outline-slate-800"
-                      value={tax.modelo_nombre}
-                      onChange={(e) => handleTaxChange(index, 'modelo_nombre', e.target.value)}
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[10px] font-semibold text-stone-500 mb-0.5">Tipo Resultado</label>
-                    <select
-                      className="w-full px-2 py-1 text-xs border border-stone-300 rounded focus:outline-slate-800 bg-white"
-                      value={tax.tipo_resultado}
-                      onChange={(e) => handleTaxChange(index, 'tipo_resultado', e.target.value)}
-                    >
+                <div className="field-grid field-grid-3">
+                  <label className="field field-span-2">
+                    <span>Nombre del impuesto</span>
+                    <input type="text" value={tax.modelo_nombre} onChange={(e) => handleTaxChange(index, 'modelo_nombre', e.target.value)} />
+                  </label>
+                  <label className="field">
+                    <span>Resultado</span>
+                    <select value={tax.tipo_resultado} onChange={(e) => handleTaxChange(index, 'tipo_resultado', e.target.value)}>
                       <option value="Domiciliación">Domiciliación</option>
                       <option value="A ingresar">A ingresar</option>
                       <option value="A compensar">A compensar</option>
@@ -215,66 +174,54 @@ export const NoticeEditor: React.FC<NoticeEditorProps> = ({ notice, onSave, onCa
                       <option value="Resultado cero / Sin actividad">Sin actividad</option>
                       <option value="Devolución">Devolución (la AEAT le ingresa)</option>
                     </select>
-                  </div>
+                  </label>
                 </div>
-
-                {/* La fecha de presentación solo se enseña en los avisos que no
-                    hay que pagar, que es donde sustituye al importe. */}
-                {['A compensar', 'Resultado negativo', 'Resultado cero / Sin actividad'].includes(tax.tipo_resultado) && (
-                  <div className="mt-2">
-                    <label className="block text-[10px] font-semibold text-stone-500 mb-0.5">
-                      Fecha de presentación <span className="font-normal text-stone-400">(sale en el aviso; vacía = no se muestra)</span>
+                <div className="field-grid">
+                  {needsAccount && (
+                    <label className="field">
+                      <span>{tax.tipo_resultado === 'Devolución' ? 'IBAN de abono' : 'IBAN de cargo'}</span>
+                      <input type="text" className="mono" value={tax.iban || ''} onChange={(e) => handleTaxChange(index, 'iban', e.target.value)} placeholder="ES00 0000 0000 0000 0000 0000" />
                     </label>
-                    <input
-                      type="date"
-                      className="w-full px-2 py-1 text-xs border border-stone-300 rounded focus:outline-slate-800 bg-white"
-                      value={tax.fechaPresentacion ? tax.fechaPresentacion.slice(0, 10) : ''}
-                      onChange={(e) =>
-                        handleTaxChange(
-                          index,
-                          'fechaPresentacion',
-                          // El input da 'aaaa-mm-dd'; se guarda a mediodía para que
-                          // ningún huso horario mueva la fecha un día atrás.
-                          e.target.value ? new Date(e.target.value + 'T12:00:00').toISOString() : '',
-                        )
-                      }
-                    />
-                  </div>
-                )}
+                  )}
+                  <label className="field">
+                    <span>Nº de justificante <small>(opcional)</small></span>
+                    <input type="text" className="mono" value={tax.numero_justificante || ''} onChange={(e) => handleTaxChange(index, 'numero_justificante', e.target.value.replace(/\s+/g, ''))} />
+                  </label>
+                  {/* La fecha de presentación solo se enseña en los avisos que no
+                      hay que pagar, que es donde sustituye al importe. */}
+                  {noPayment && (
+                    <label className="field">
+                      <span>Fecha de presentación <small>(vacía = no se muestra)</small></span>
+                      <input
+                        type="date"
+                        value={tax.fechaPresentacion ? tax.fechaPresentacion.slice(0, 10) : ''}
+                        onChange={(e) =>
+                          handleTaxChange(
+                            index,
+                            'fechaPresentacion',
+                            // El input da 'aaaa-mm-dd'; se guarda a mediodía para que
+                            // ningún huso horario mueva la fecha un día atrás.
+                            e.target.value ? new Date(e.target.value + 'T12:00:00').toISOString() : '',
+                          )
+                        }
+                      />
+                    </label>
+                  )}
+                </div>
+              </fieldset>
+            );
+          })}
+        </div>
+      )}
+      <datalist id="periodos-aeat">
+        {['1T', '2T', '3T', '4T', '01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12', '1P', '2P', '3P', '0A'].map((value) => <option key={value} value={value} />)}
+      </datalist>
 
-                {tax.tipo_resultado === 'Domiciliación' && (
-                  <div className="mt-2">
-                    <label className="block text-[10px] font-semibold text-stone-500 mb-0.5">IBAN de Cargo</label>
-                    <input
-                      type="text"
-                      className="w-full px-2 py-1 text-xs border border-stone-300 rounded focus:outline-slate-800 font-mono"
-                      value={tax.iban || ''}
-                      onChange={(e) => handleTaxChange(index, 'iban', e.target.value)}
-                      placeholder="ES00 0000..."
-                    />
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      <div className="flex gap-2 justify-end">
-        <button
-          onClick={onCancel}
-          className="px-3 py-1.5 text-xs font-semibold rounded-lg text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 transition-colors"
-          id="btn-edit-cancel"
-        >
-          Cancelar
-        </button>
-        <button
-          onClick={handleSave}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg text-white bg-slate-800 hover:bg-slate-900 transition-colors"
-          id="btn-edit-save"
-        >
-          <Save className="w-3.5 h-3.5" />
-          <span>Guardar Cambios</span>
+      {error && <p className="inline-result" data-ok="false" role="alert">{error}</p>}
+      <div className="details-footer">
+        <button type="button" onClick={onCancel} className="btn" id="btn-edit-cancel">Cancelar</button>
+        <button type="button" onClick={handleSave} className="btn btn-primary" id="btn-edit-save">
+          <Save aria-hidden="true" /> Guardar cambios
         </button>
       </div>
     </div>

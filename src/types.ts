@@ -1,3 +1,4 @@
+import { getAeatDeadlines } from './aeatCalendar';
 import type { FieldCheck } from './validation';
 
 export interface NoticeVerification {
@@ -29,8 +30,17 @@ export interface TaxNotice {
   iban?: string;
   screenshotUrl?: string; // miniatura JPEG comprimida (base64 pequeño)
   screenshotId?: string; // id de la captura original guardada en disco (/api/capturas/:id)
-  fechaCargo: string; // Calculated final AEAT charge/deadline
-  fechaLimiteDomiciliacion: string; // Calculated direct debit cutoff
+  /**
+   * Fin del plazo de presentación e ingreso (ISO). Si está domiciliada, es
+   * también el día en que la AEAT carga el importe. Vacía si no se conoce.
+   */
+  fechaCargo: string;
+  /** Último día para presentar domiciliando el pago (ISO). Vacía si no aplica. */
+  fechaLimiteDomiciliacion: string;
+  /** Número de justificante de la declaración, si se leyó de la captura. */
+  numero_justificante?: string;
+  /** Lo último guardado de este NIF en el directorio común (para detectar cambios de IBAN). */
+  clienteConocido?: { nombre?: string; iban?: string };
   /**
    * Fecha real de presentación leída de la captura ("Datos Present."), en ISO.
    * Es un dato de la captura, no calculado: si no aparece se queda vacío y la
@@ -94,119 +104,34 @@ export function normalizeTaxResult(modelo: unknown, value: unknown): TaxNotice['
   return result;
 }
 
-// Function to calculate AEAT Spanish Tax Deadlines and Direct Debit Cutoffs
-export function calculateAEATDeadlines(modelo: string, periodo: string, ejercicio: string): { 
-  fechaCargo: Date; 
-  fechaLimiteDomiciliacion: Date;
-} {
-  const year = parseInt(ejercicio, 10) || new Date().getFullYear();
-  let cargoYear = year;
-  let cargoMonth = 0; // 0-indexed (Jan is 0, Dec is 11)
-  let cargoDay = 20;
-  
-  let domYear = year;
-  let domMonth = 0;
-  let domDay = 15;
-
-  const cleanPeriod = (periodo || "").toUpperCase().trim();
-
-  if (cleanPeriod === "1T") {
-    cargoMonth = 3; // April
-    cargoDay = 20;
-    domMonth = 3;
-    domDay = 15;
-  } else if (cleanPeriod === "2T") {
-    cargoMonth = 6; // July
-    cargoDay = 20;
-    domMonth = 6;
-    domDay = 15;
-  } else if (cleanPeriod === "3T") {
-    cargoMonth = 9; // October
-    cargoDay = 20;
-    domMonth = 9;
-    domDay = 15;
-  } else if (cleanPeriod === "4T") {
-    cargoYear = year + 1;
-    cargoMonth = 0; // January
-    cargoDay = 30;
-    domYear = year + 1;
-    domMonth = 0;
-    domDay = 25;
-  } else {
-    // Treat as monthly (e.g. "01" for Jan, due Feb 20th)
-    const monthNum = parseInt(cleanPeriod, 10);
-    if (!isNaN(monthNum) && monthNum >= 1 && monthNum <= 12) {
-      if (monthNum === 12) {
-        // December monthly is due January 30th of the following year
-        cargoYear = year + 1;
-        cargoMonth = 0; // January
-        cargoDay = 30;
-        domYear = year + 1;
-        domMonth = 0;
-        domDay = 25;
-      } else {
-        // Month M is due M+1 on the 20th
-        // Since monthNum is 1-indexed (Jan=1, due Feb=index 1), we can set cargoMonth to monthNum
-        cargoMonth = monthNum; // Jan(1) -> Feb(1), Feb(2) -> March(2), etc.
-        cargoDay = 20;
-        domMonth = monthNum;
-        domDay = 15;
-      }
-    } else {
-      // Fallback if period cannot be parsed cleanly, default to current quarter style
-      cargoMonth = 3; // April
-      cargoDay = 20;
-      domMonth = 3;
-      domDay = 15;
-    }
-  }
-
-  // El mediodía evita que la serialización ISO desplace la fecha al día
-  // anterior en zonas horarias positivas.
-  let cargoDate = new Date(cargoYear, cargoMonth, cargoDay, 12);
-  let domDate = new Date(domYear, domMonth, domDay, 12);
-
-  // Shifting if it lands on a weekend (Saturday or Sunday) to next business day (Monday)
-  const adjustWeekend = (d: Date): Date => {
-    const day = d.getDay();
-    const res = new Date(d);
-    if (day === 6) { // Saturday
-      res.setDate(d.getDate() + 2);
-    } else if (day === 0) { // Sunday
-      res.setDate(d.getDate() + 1);
-    }
-    return res;
+/**
+ * Rellena las fechas de un aviso con el calendario de la AEAT. Si el periodo o
+ * el modelo no permiten saber el plazo, las fechas quedan vacías (y el aviso
+ * se marca para revisar) en vez de inventar una.
+ */
+export function withDeadlines<T extends Pick<TaxNotice, 'modelo' | 'periodo' | 'ejercicio'>>(notice: T): T & Pick<TaxNotice, 'fechaCargo' | 'fechaLimiteDomiciliacion'> {
+  const deadlines = getAeatDeadlines(notice.modelo, notice.periodo, notice.ejercicio);
+  return {
+    ...notice,
+    fechaCargo: deadlines ? deadlines.finPlazo.toISOString() : '',
+    fechaLimiteDomiciliacion: deadlines?.finDomiciliacion ? deadlines.finDomiciliacion.toISOString() : '',
   };
+}
 
-  cargoDate = adjustWeekend(cargoDate);
-  domDate = adjustWeekend(domDate);
-
-  // Fechas publicadas por la AEAT que prevalecen sobre la regla general. La
-  // fórmula anterior mantiene el cálculo automático para cualquier ejercicio;
-  // esta tabla permite reflejar ampliaciones oficiales por días inhábiles.
-  const official303Quarterly: Record<string, [string, string]> = {
-    '2026-1T': ['2026-04-20', '2026-04-15'],
-    '2026-2T': ['2026-07-20', '2026-07-15'],
-    '2026-3T': ['2026-10-20', '2026-10-15'],
-  };
-  const official = modelo.trim() === '303' ? official303Quarterly[`${year}-${cleanPeriod}`] : undefined;
-  if (official) {
-    const localDate = (iso: string) => {
-      const [y, m, d] = iso.split('-').map(Number);
-      return new Date(y, m - 1, d, 12);
-    };
-    cargoDate = localDate(official[0]);
-    domDate = localDate(official[1]);
-  }
-
-  return { fechaCargo: cargoDate, fechaLimiteDomiciliacion: domDate };
+/** Convierte una fecha ISO guardada en Date, o null si falta o no es válida. */
+export function parseStoredDate(value?: string): Date | null {
+  if (!value) return null;
+  const date = new Date(value);
+  return isNaN(date.getTime()) ? null : date;
 }
 
 export function formatDateSpanish(date: Date): string {
+  // En español los meses van en minúscula ("lunes, 20 de abril de 2026");
+  // solo el día de la semana, que abre la frase, va con mayúscula.
   const days = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
   const months = [
-    "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
-    "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"
+    "enero", "febrero", "marzo", "abril", "mayo", "junio",
+    "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"
   ];
   const dayName = days[date.getDay()];
   const dayNum = date.getDate();

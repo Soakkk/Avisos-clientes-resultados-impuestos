@@ -86,6 +86,24 @@ export class ClientDirectory {
     }
   }
 
+  /**
+   * Último valor conocido de cada campo de un NIF (el más reciente entre el
+   * valor guardado y las alternativas en conflicto).
+   */
+  async lookup(nifInput: string): Promise<Record<string, string> | null> {
+    const nif = normalizeNif(nifInput || '');
+    if (!nif) return null;
+    const record = (await this.load()).clients[nif];
+    if (!record) return null;
+    const latest: Record<string, string> = {};
+    for (const [field, stored] of Object.entries(record.fields)) {
+      const candidates = [stored, ...(record.conflicts[field] || [])];
+      candidates.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+      if (candidates[0]?.value) latest[field] = candidates[0].value;
+    }
+    return latest;
+  }
+
   async mergeVerified(client: VerifiedClientInput, source: string): Promise<{
     written: boolean;
     rejectedFields: string[];
@@ -105,18 +123,24 @@ export class ClientDirectory {
     const document = await this.load();
     const record = document.clients[nif] || { nif, fields: {}, conflicts: {} };
     const updatedAt = this.now().toISOString();
+    // La bandeja se guarda muy a menudo: solo se reescribe el directorio común
+    // cuando de verdad aporta algo nuevo.
+    let changed = false;
     for (const [field, input] of accepted) {
       const incoming: StoredField = { value: input.value.trim(), source, updatedAt };
       const existing = record.fields[field];
-      if (existing && existing.value !== incoming.value) {
+      if (existing && existing.value === incoming.value) continue;
+      if (existing) {
         const conflicts = record.conflicts[field] || [];
-        if (!conflicts.some((candidate) => candidate.value === existing.value)) conflicts.push(existing);
-        if (!conflicts.some((candidate) => candidate.value === incoming.value)) conflicts.push(incoming);
+        if (!conflicts.some((candidate) => candidate.value === existing.value)) { conflicts.push(existing); changed = true; }
+        if (!conflicts.some((candidate) => candidate.value === incoming.value)) { conflicts.push(incoming); changed = true; }
         record.conflicts[field] = conflicts;
         continue;
       }
       record.fields[field] = incoming;
+      changed = true;
     }
+    if (!changed) return { written: false, rejectedFields, record };
     document.clients[nif] = record;
     document.updatedAt = updatedAt;
     await atomicWriteJson(this.filePath, encodeClientDirectory(document));

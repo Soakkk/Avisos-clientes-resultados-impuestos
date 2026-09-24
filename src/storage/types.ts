@@ -77,16 +77,3 @@ export interface NoticeSearchFilters {
   from?: string;
   to?: string;
 }
-
-export interface BackupManifest {
-  product: 'avisos-fiscales';
-  schemaVersion: 1;
-  exportedAt: string;
-}
-
-export interface NoticeBackup {
-  manifest: BackupManifest;
-  state: NoticeState;
-  clients: ClientDirectoryFile | null;
-  captures: Record<string, string>;
-}

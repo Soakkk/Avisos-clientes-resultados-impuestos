@@ -91,7 +91,7 @@ test('la bandeja expone estados errores y reintento de cada captura', () => {
     onRetry: () => {},
     onSelect: () => {},
   }));
-  assert.match(markup, /Bandeja/);
+  assert.match(markup, /Capturas en proceso/);
   assert.match(markup, /Sin conexión/);
   assert.match(markup, /Reintentar/);
 });

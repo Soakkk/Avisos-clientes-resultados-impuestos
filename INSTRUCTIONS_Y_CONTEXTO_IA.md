@@ -1,125 +1,146 @@
-# Documento de Contexto Técnico para IAs y Manual de Usuario
+# Contexto técnico del Generador de Avisos Fiscales
 
-Este documento contiene toda la información de contexto necesaria para que cualquier modelo de Inteligencia Artificial (IA) o desarrollador entienda la arquitectura, el flujo de datos, la lógica fiscal y los pasos de despliegue/compilación del **Generador de Avisos Fiscales**.
+Documento de referencia para cualquier persona o IA que trabaje en el proyecto.
+Describe el estado real del código; si cambias algo importante, actualízalo aquí.
 
----
+## 1. Qué hace la aplicación
 
-## 1. Propósito de la Aplicación
+App de escritorio para Windows (Electron) de la asesoría. El flujo diario es:
 
-La aplicación es un software de escritorio y web diseñado para **asesorías y despachos fiscales en España**. Su función principal es agilizar y automatizar la generación de avisos de liquidación de impuestos para enviar a los clientes (principalmente vía WhatsApp en formato texto y con fichas visuales de alta definición en formato imagen).
+1. Se hace una captura de la declaración presentada (A3, Sage, Sede de la AEAT…)
+   y se pega con `Ctrl+V` (o se arrastran varias imágenes).
+2. Cada captura entra en una **bandeja persistente** y se lee con Gemini. Se hacen
+   **dos lecturas a la vez con modelos distintos** y se comparan campo a campo.
+3. Se aplican **comprobaciones deterministas** (sin IA) y el aviso queda como
+   «Verificado», «Revisar datos» o «Sin verificar».
+4. Las capturas del mismo cliente (mismo NIF) se agrupan en un único aviso.
+5. Se genera el aviso en dos formatos: **ficha en imagen** (lo que se suele enviar)
+   y **texto de WhatsApp** (a partir de plantillas editables).
+6. «Copiar y siguiente» copia la ficha o el texto, archiva el aviso y pasa al
+   siguiente.
 
-### Características Clave:
-1. **Flujo de Portapapeles Automático**: El usuario puede pulsar la tecla `Impr Pant` (o hacer una captura de pantalla) en su programa de gestión fiscal (como A3, Sage, la Sede Electrónica de la AEAT, etc.) y pulsar `Ctrl+V` (o el botón de pegar) en la aplicación.
-2. **Lectura con IA mediante Gemini 2.5 Flash** (se descartó 3.5-flash porque se colgaba de forma sistemática en las llamadas con imagen): La aplicación procesa la captura de pantalla de forma segura a nivel de servidor, extrayendo campos clave como:
-   - Número de Modelo (ej. 303, 111, 115, 130, 200, 202, etc.)
-   - Nombre o concepto del impuesto.
-   - Periodo o trimestre (ej. 1T, 2T, 3T, 4T, 01, 10, etc.)
-   - Ejercicio (año fiscal, ej. 2026).
-   - Datos del cliente: NIF/CIF y Nombre Completo.
-   - Importe de la liquidación (positivo o negativo).
-   - Tipo de resultado: Domiciliación, A ingresar, A compensar, Sin actividad, Devolución.
-   - Código IBAN de la cuenta si figura en la captura.
-3. **Cálculo Automático de Plazos AEAT**: La aplicación calcula de forma automática los plazos límite y de cobro oficiales del calendario del contribuyente español para la AEAT. Además, **desplaza de forma automática el plazo al siguiente día hábil** si la fecha cae en fin de semana (sábados o domingos) o festivo nacional.
-4. **Unificación por Cliente**: Si el usuario realiza y pega varias capturas correspondientes al mismo cliente, la aplicación unifica de forma inteligente los impuestos bajo un único cliente, desglosando los importes, calculando el resultado total y consolidando la información en un único aviso.
-5. **Generación Multiformato**:
-   - **Vista WhatsApp**: Genera un texto limpio, profesional y con formato Markdown (`*negritas*` y viñetas) listo para copiar al portapapeles con un clic y enviar por WhatsApp.
-   - **Vista Tarjeta**: Dibuja mediante HTML5 Canvas una ficha corporativa estética de alta definición con el desglose, que se puede copiar directamente como imagen al portapapeles o descargar como archivo PNG.
-6. **Almacenamiento Local (Privacy-First)**: Los avisos se guardan de forma local en el navegador del usuario utilizando `localStorage`. No se requiere una base de datos externa, preservando al máximo la confidencialidad de los datos de los clientes.
+Todo se guarda en el propio PC; los datos de clientes solo salen hacia la API de
+Gemini (la imagen de la captura).
 
----
+## 2. Mapa del código
 
-## 2. Arquitectura de Archivos del Proyecto
+| Archivo | Qué contiene |
+|---|---|
+| `server.ts` | Servidor Express local (puerto 3000 en el `.exe`). Configuración, capturas en disco, lectura con IA y almacenamiento. |
+| `src/server/aiSettings.ts` | Ajustes de IA en `config.json`: clave, modelo principal, modelo de verificación y capturas en paralelo. Modelos recomendados y cadenas de respaldo. |
+| `src/server/taxReader.ts` | Esquema JSON, prompts, llamadas a Gemini con reintentos, respaldo de modelo, comparación de las dos lecturas y códigos de error. |
+| `src/aeatCalendar.ts` | **Calendario del contribuyente**: plazos por modelo y periodo, festivos nacionales, traslados y tabla de fechas oficiales. |
+| `src/noticeFactory.ts` | Construye un aviso a partir de la lectura de la IA y reúne todas las comprobaciones. |
+| `src/validation.ts` | Comprobaciones deterministas: IBAN (mod-97), NIF/NIE/CIF, modelo, periodo, ejercicio, importe, resultado, justificante, titular, plazo y directorio de clientes. |
+| `src/summary.ts` | Resumen de un aviso con varios impuestos: qué se paga, qué no, total, fechas. Lo usan la ficha, el texto y la interfaz. |
+| `src/whatsapp.ts` | Plantillas de texto por situación y su sustitución de variables. |
+| `src/types.ts` | Tipos (`TaxNotice`, `JointNotice`), normalización del resultado y fechas. |
+| `src/history.ts` | Agrupación por cliente, separar/deshacer y «copiar, archivar y continuar». |
+| `src/queue/*` | Bandeja de capturas: estados, reintentos y paralelismo. |
+| `src/storage/*` | Estado en disco (`notices.json`), historial compacto y directorio común de clientes. |
+| `src/components/NoticeCard.tsx` | **Ficha exportada a imagen.** Diseño aprobado: no cambiar su aspecto sin pedirlo. |
+| `src/components/*` | Interfaz: cinta (`Ribbon`), lista de avisos, panel de datos, editor, ajustes, historial y avisos flotantes. |
+| `main-electron.cjs` / `preload.cjs` | Ventana de Electron, actualizaciones automáticas y guardado antes de cerrar. |
 
-El proyecto está estructurado como una aplicación **Full-Stack (Vite React + Express)** lista para compilarse como aplicación nativa de escritorio de Windows mediante **Electron**:
+## 3. Reglas fiscales (calendario AEAT)
 
-- `/server.ts`: Servidor backend Express que se comunica con la API oficial de Google GenAI (`@google/genai` v2). La lectura principal usa `gemini-2.5-flash` y la segunda lectura de verificación usa un modelo DISTINTO (`gemini-2.0-flash`, con fallback a `gemini-2.5-flash-lite` y `gemini-2.5-flash`) para que el contraste sea independiente. Ambas con esquemas de respuesta JSON estrictos (`responseSchema`). Además, `/src/validation.ts` valida IBAN (mod-97) y NIF/NIE/CIF (letra de control) de forma determinista, sin IA.
-- `/main-electron.cjs`: Archivo principal de entrada de Electron. Levanta el servidor Express interno localmente de fondo (puerto 3000) de forma segura y abre una ventana nativa de escritorio.
-- `/src/types.ts`: Contiene las interfaces TypeScript del sistema (`TaxNotice`, `JointNotice`) y la función principal de cálculo de plazos de la AEAT (`calculateAEATDeadlines`) que gestiona el desplazamiento de fines de semana.
-- `/src/App.tsx`: Interfaz de usuario interactiva y refinada basada en Tailwind CSS, con área activa de arrastrar/soltar imágenes y control global de eventos de pegado (`paste`).
-- `/src/components/NoticeCardCanvas.tsx`: Componente de dibujo con HTML5 Canvas en alta resolución (escala 2x para evitar pixelado) y botones para copiar la imagen directamente al portapapeles.
-- `/src/components/NoticeEditor.tsx`: Formulario dinámico para corregir, editar, o añadir manualmente impuestos y cuentas IBAN por si el programa de contabilidad tuviera datos incompletos.
-- `/src/components/LoaderOverlay.tsx`: Pantalla de carga animada que muestra en tiempo real las fases del procesamiento del modelo fiscal por la IA.
-- `/package.json`: Configura todos los scripts de compilación web, bundling del servidor backend mediante `esbuild` y el empaquetado del instalador nativo de Windows `.exe` mediante `electron-builder`.
+Hay que distinguir tres fechas, y la interfaz las nombra siempre así:
 
----
+- **Fin del plazo**: último día para presentar e ingresar.
+- **Cargo en cuenta**: si la declaración está domiciliada, la AEAT carga el
+  importe el **último día del plazo**, es decir, el mismo día que el fin del plazo.
+- **Domiciliar hasta**: último día para presentar eligiendo domiciliación.
 
-## 3. Lógica de Negocio: Reglas AEAT de Domiciliaciones y Plazos
+Reglas implementadas en `getAeatDeadlines`:
 
-La función `calculateAEATDeadlines` en `/src/types.ts` aplica las siguientes directrices fiscales:
-- **Trimestrales (1T, 2T, 3T)**: La fecha de cargo y plazo límite es el día **20** del mes posterior al trimestre (Abril, Julio, Octubre). El plazo límite de domiciliación es el día **15**.
-- **Trimestral (4T)**: El plazo límite de pago es el día **30 de Enero** del año siguiente. El plazo límite de domiciliación es el día **25 de Enero**.
-- **Mensuales (01 a 11)**: El plazo de pago es el día **20** del mes siguiente. El de domiciliación el día **15**.
-- **Mensual (12 - Diciembre)**: Equivalente al 4T, vence el **30 de Enero** del año posterior (domiciliación el **25**).
-- **Desplazamiento por fin de semana**: Si cualquiera de estas fechas (ej. el día 20 o el día 15) es sábado o domingo, la fecha se desplaza automáticamente al siguiente lunes (día hábil).
+| Periodo | Fin del plazo | Domiciliación |
+|---|---|---|
+| 1T / 2T / 3T | 20 de abril / julio / octubre | 15 |
+| 4T de 303, 130, 131 (y 349) | 30 de enero del año siguiente | 27 de enero |
+| 4T de 111, 115, 123 | 20 de enero del año siguiente | 15 de enero |
+| 202: 1P / 2P / 3P | 20 de abril / octubre / diciembre | 15 |
+| Mensual (111, 115, 123…) | 20 del mes siguiente (diciembre → 20 de enero) | 15 |
+| Mensual 303 (SII) | 30 del mes siguiente (febrero: último día) | estimada |
+| 390 · 349 anual | 30 de enero | — |
+| 180 · 190 | 31 de enero | — |
+| 347 | último día de febrero | — |
+| 200 | 25 de julio | 22 de julio |
+| 100 (Renta) | 30 de junio | 25 de junio |
 
----
+- Si el último día cae en **sábado, domingo o festivo nacional**, pasa al primer
+  día hábil siguiente. Los festivos nacionales se calculan (incluido Viernes Santo).
+- La **fecha de domiciliación nunca se retrasa** por calendario (criterio
+  prudente): si cae en día inhábil se adelanta, y se respeta el margen mínimo de
+  la Orden HAC/241/2025 (3 días hábiles o 5 naturales hasta el fin del plazo).
+- Las fechas publicadas por la AEAT prevalecen: tabla `OFFICIAL_DEADLINES`
+  (2025 y 2026). **Cada diciembre, al publicarse el calendario del año siguiente,
+  conviene añadir sus fechas a esa tabla.**
+- Los festivos autonómicos o locales no se tienen en cuenta (la AEAT puede
+  ampliar el plazo en un municipio, como el Lunes de Pascua de 2025).
+- Si no se puede calcular el plazo (periodo o modelo ilegibles), las fechas quedan
+  vacías y el aviso pide revisión. **Nunca se inventa una fecha.**
 
-## 4. Cómo Gestionar el Repositorio de GitHub
+## 4. Lectura con IA
 
-Este proyecto está listo para integrarse con GitHub. Al subirlo a GitHub, podrás realizar actualizaciones (`updates`) periódicas y desplegar versiones de forma sencilla.
+- Modelos por defecto: **Gemini 3.8 Flash** (lectura principal) y **Gemini 3.7
+  Flash** (verificación). Se cambian en Ajustes → Inteligencia artificial, donde
+  también se puede consultar la lista de modelos que admite la clave.
+- Si un modelo no está disponible (retirado, no incluido en la clave…) se prueba
+  el siguiente de la cadena (`MAIN_FALLBACKS`, `VERIFY_FALLBACKS`). La
+  verificación nunca usa el mismo modelo que la lectura principal.
+- Se usa `thinkingLevel: LOW` (los 3.7/3.8 no admiten `MINIMAL`); si un modelo no
+  admite el nivel de razonamiento, se repite la llamada sin él.
+- Las dos lecturas van en paralelo en `POST /api/gemini/read-tax`. Si falla la
+  verificación, el aviso queda «Sin verificar» pero no se bloquea.
+- Errores: clave o modelo no válidos → 400 (no se reintenta); cuota → 429;
+  saturación o cuelgue → 503 (la bandeja reintenta a 1, 2 y 4 s).
+- Si la IA no lee un dato, **se deja vacío**: la app no rellena valores habituales.
 
-### Pasos para vincular a tu cuenta de GitHub:
-1. En la esquina superior derecha o en la configuración de la interfaz de AI Studio, selecciona la opción **"Exportar a GitHub"** (esto creará de forma automática un repositorio privado o público con este código).
-2. De forma alternativa, puedes descargar el archivo ZIP del proyecto, extraerlo en tu PC local e iniciar Git de forma estándar:
-   ```bash
-   git init
-   git add .
-   git commit -m "Initial commit: Generador de Avisos Fiscales con IA"
-   git remote add origin https://github.com/TU_USUARIO/TU_REPOSITORIO.git
-   git branch -M main
-   git push -u origin main
-   ```
-3. Cada vez que realices una mejora o actualización del código, simplemente haz commit y push a GitHub:
-   ```bash
-   git add .
-   git commit -m "Mensaje descriptivo del cambio"
-   git push
-   ```
+## 5. Comprobaciones de cada aviso
 
----
+Además de comparar las dos lecturas:
 
-## 5. Cómo Crear el Instalador `.exe` para Windows
+- IBAN con dígito de control mod-97 y NIF/NIE/CIF con su letra o dígito de control.
+- Modelo conocido, periodo válido (1T-4T, 01-12, 1P-3P solo en el 202, 0A),
+  ejercicio razonable, importe coherente con el resultado.
+- **Justificante**: 13 dígitos que empiezan por el número de modelo.
+- **Titular**: 100/130/131 son de personas físicas; 200/202, de sociedades.
+- **Plazo**: avisa si el periodo venció hace más de ~2,5 meses o aún no toca.
+- **Directorio común de clientes** (`%LOCALAPPDATA%\AsesoriaEMarin\Suite\clientes.json`,
+  compartido con el Escáner): avisa si el IBAN o el nombre no coinciden con los
+  últimos guardados para ese NIF. Tras revisarlo a mano en el editor, se acepta.
 
-Para ejecutar esta aplicación en Windows como un programa instalable de escritorio (.exe) independiente que funcione 100% en local en el PC de tu asesoría, sigue estos sencillos pasos:
+## 6. Almacenamiento
 
-### Prerrequisitos en tu PC Windows:
-- Tener instalado **Node.js** (versión 18 o superior). Puedes descargarlo gratis desde [nodejs.org](https://nodejs.org/).
+- `%USERPROFILE%\.generador-avisos-fiscales\config.json`: clave y ajustes de IA.
+- `…\notices.json`: bandeja, avisos activos, agrupaciones, borrador del editor e
+  historial. El historial guarda solo datos (sin miniaturas) de los **300 avisos
+  más recientes**; así el archivo no crece sin límite.
+- `…\capturas\`: capturas originales. Se borran las huérfanas de más de 90 días.
+- `localStorage`: solo preferencias (nombre de la asesoría, firma, formato de
+  ficha y plantillas de texto modificadas).
+- No hay copias de seguridad: se retiraron porque no aportaban nada a esta app.
 
-### Pasos de compilación local:
-1. Abre la terminal (`PowerShell` o `Símbolo de sistema`) en la carpeta raíz del proyecto clonado de GitHub.
-2. Instala las dependencias necesarias:
-   ```bash
-   npm install
-   ```
-3. Configura tu API Key de Gemini:
-   Ya no hace falta crear ningún archivo `.env` a mano. Al abrir la app (en desarrollo o ya instalada), pulsa el botón
-   **"Configurar API Key"** de la cabecera y pega tu clave de Google Gemini (gratis en Google AI Studio). Se guarda
-   de forma local en `%USERPROFILE%\.generador-avisos-fiscales\config.json` en tu propio PC, y sobrevive a
-   reinstalaciones/actualizaciones del programa. Si prefieres seguir usando un `.env` en desarrollo, sigue
-   funcionando como variable de respaldo (`GEMINI_API_KEY=...`), pero la clave guardada desde Ajustes tiene prioridad.
-4. **Genera el instalador de Windows `.exe`**:
-   Ejecuta el comando de empaquetado automatizado:
-   ```bash
-   npm run electron:build
-   ```
-5. ¡Listo! El proceso compilará el código de React, empaquetará el servidor Express y creará una carpeta llamada **`dist-electron/`**.
-   Dentro de esa carpeta encontrarás el archivo de instalación:
-   - **`Generador de Avisos Fiscales Setup 1.0.0.exe`**
-   Al hacer doble clic sobre él, se instalará de forma automática en tu Windows, agregando un acceso directo en tu escritorio y menú de inicio con interfaz nativa rápida.
+## 7. Recomendaciones para quien continúe
 
-### Desarrollo local rápido en Windows:
-Si solo deseas probarlo en tu escritorio sin empaquetar en instalador:
+- **Privacidad**: nada de bases de datos en la nube. Todo local.
+- **La ficha (`NoticeCard`) no se rediseña** salvo petición expresa. Los tests de
+  `tests/output-contracts.test.ts` guardan su huella: si cambias la ficha a
+  propósito, revísala visualmente y actualiza la huella.
+- Para un modelo nuevo de Gemini: añádelo a `RECOMMENDED_MODELS` y, si procede, a
+  las cadenas de respaldo en `src/server/aiSettings.ts`.
+- Antes de publicar: `npm run lint`, `npm test` y `npm run build`.
+
+## 8. Desarrollo y publicación
+
 ```bash
-# Terminal 1: Inicia el servidor de backend y de desarrollo
-npm run dev
-
-# Terminal 2: Levanta la ventana nativa de Electron conectada al desarrollo
-npm run electron:dev
+npm install
+npm run dev          # servidor + interfaz (http://localhost:3000)
+npm run electron:dev # ventana de Electron conectada al servidor de desarrollo
+npm test             # pruebas
+npm run electron:build   # instalador en dist-electron/
 ```
 
----
-
-## 6. Recomendaciones para el Siguiente prompt o IA
-
-- **Privacidad y Seguridad**: Si otra IA propone integrar una base de datos en la nube (como Firebase o PostgreSQL), recuerda que la política preferida del cliente es la **privacidad extrema en local** (`localStorage` o SQLite/JSON local) para no comprometer datos sensibles de NIF y cuentas bancarias de las empresas clientes fuera de su ordenador corporativo.
-- **Modelos de Impuestos**: Si necesitas expandir la precisión de Gemini para nuevos modelos (como el Modelo 115 o Modelo 130), puedes editar la instrucción `promptText` en `/server.ts` para agregar especificaciones o ejemplos visuales en el prompt del sistema.
+Las versiones se publican al subir una etiqueta `vX.Y.Z` (GitHub Actions compila
+el instalador en Windows y lo sube a las releases del repositorio). La app busca
+actualizaciones al arrancar y cada seis horas.

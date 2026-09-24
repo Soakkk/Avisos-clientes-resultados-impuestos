@@ -12,9 +12,9 @@ test('el workspace usa los tokens exactos de la suite', () => {
   });
 });
 
-test('el shell expone cabecera bandeja entrada resultado e historial', () => {
+test('el shell expone título, cinta, bandeja, datos, resultado y barra de estado', () => {
   const markup = renderToStaticMarkup(createElement(App));
-  for (const region of ['header', 'queue', 'input', 'result', 'history']) {
+  for (const region of ['header', 'ribbon', 'queue', 'input', 'result', 'status']) {
     assert.match(markup, new RegExp(`data-workspace-region="${region}"`));
   }
   assert.match(markup, /class="workspace-shell/);
