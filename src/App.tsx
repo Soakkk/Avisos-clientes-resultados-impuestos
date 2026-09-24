@@ -263,10 +263,22 @@ export default function App() {
     }
   }, []);
 
+  // Escribir en la nota o en el editor no debe reescribir el archivo en cada
+  // tecla: se agrupan los cambios y se guarda al dejar de escribir. Los datos
+  // viven en las refs, así que un cierre inmediato guarda igualmente lo último.
+  const persistTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const schedulePersist = useCallback(() => {
+    if (persistTimer.current) clearTimeout(persistTimer.current);
+    persistTimer.current = setTimeout(() => {
+      persistTimer.current = null;
+      void persistWorkspace().catch(() => {});
+    }, 600);
+  }, [persistWorkspace]);
+
   const rememberDraft = useCallback((draft: EditorDraft) => {
     editorDraftRef.current = draft;
-    if (storageReady) void persistWorkspace().catch(() => {});
-  }, [persistWorkspace, storageReady]);
+    if (storageReady) schedulePersist();
+  }, [schedulePersist, storageReady]);
 
   const cancelEditing = () => {
     editorDraftRef.current = null;
@@ -385,9 +397,13 @@ export default function App() {
   }, []);
 
   // Save changes to localStorage
-  const saveNoticesToLocal = (newNotices: TaxNotice[]) => {
+  const saveNoticesToLocal = (newNotices: TaxNotice[], { deferred = false } = {}) => {
     rawNoticesRef.current = newNotices;
     setRawNotices(newNotices);
+    if (deferred) {
+      schedulePersist();
+      return;
+    }
     void persistWorkspace(queueItemsRef.current, newNotices).catch((error) => {
       console.error('No se pudo guardar en disco', error);
       alert('Atención: no se han podido guardar los avisos en disco. No añada más capturas hasta reiniciar la aplicación.');
@@ -682,7 +698,7 @@ export default function App() {
         ? { ...notice, mostrarNotaAsesoria: enabled, notaAsesoria: cleanText }
         : notice
     );
-    saveNoticesToLocal(updated);
+    saveNoticesToLocal(updated, { deferred: true });
   };
   const generateWhatsAppText = (joint: JointNotice): string => buildWhatsAppText(joint, { agencyName, signatureText });
 
@@ -772,7 +788,8 @@ export default function App() {
       periods: Array.from(new Set(joint.notices.map((notice) => notice.periodo))),
       noticeIds: joint.notices.map((notice) => notice.id),
       captureIds: joint.notices.flatMap((notice) => notice.screenshotId ? [notice.screenshotId] : []),
-      snapshot: joint,
+      // Sin miniaturas: el historial solo necesita los datos y el id de la captura.
+      snapshot: { ...joint, notices: joint.notices.map(({ screenshotUrl: _thumbnail, ...rest }) => rest) },
     };
     if (!archivedNoticesRef.current.some((item) => item.id === archive.id)) {
       archivedNoticesRef.current = [archive, ...archivedNoticesRef.current];
@@ -854,10 +871,7 @@ export default function App() {
     if (files && files.length > 0) void enqueueFiles(Array.from(files));
   };
 
-  const workspaceRedesignEnabled = true;
-
-  if (workspaceRedesignEnabled) {
-    return (
+  return (
       <div className="workspace-shell h-screen min-h-[720px] overflow-hidden bg-[#F5F8FC] text-[#24384D] flex flex-col">
         <div
           data-workspace-region="header"
@@ -1361,549 +1375,4 @@ export default function App() {
         )}
       </div>
     );
-  }
-
-  return (
-    <div className="min-h-screen bg-slate-50/50 pb-20">
-      <AnimatePresence>
-        {loading && <LoaderOverlay step={loadingStep} takingLong={takingLong} />}
-      </AnimatePresence>
-
-      {/* Header Bar */}
-      <header className="bg-white border-b border-slate-100 sticky top-0 z-40 shadow-xs">
-        <div className="max-w-5xl mx-auto px-4 py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-slate-900 flex items-center justify-center text-white shadow-md shadow-slate-900/10">
-              <Clipboard className="w-5 h-5" />
-            </div>
-            <div>
-              <h1 className="font-display text-lg font-bold text-slate-900 tracking-tight leading-tight flex items-center gap-2">
-                Generador de Avisos Fiscales
-                {appVersion && (
-                  <span className="px-1.5 py-0.5 rounded bg-slate-100 border border-slate-200 text-[10px] font-mono font-semibold text-slate-500">
-                    v{appVersion}
-                  </span>
-                )}
-              </h1>
-              <p className="text-slate-500 text-[11px] font-medium">
-                Confección de mensajes y recibos oficiales de impuestos
-              </p>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <ApiKeySettings />
-            <button
-              onClick={loadExampleData}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-100 transition-all"
-              id="btn-load-demo"
-            >
-              <Sparkles className="w-3.5 h-3.5" />
-              <span>Ver Ejemplo de Prueba</span>
-            </button>
-            {rawNotices.length > 0 && (
-              <button
-                onClick={handleClearAll}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg text-rose-600 bg-rose-50 hover:bg-rose-100 border border-rose-100 transition-colors"
-                id="btn-clear-all"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>Limpiar</span>
-              </button>
-            )}
-          </div>
-        </div>
-      </header>
-
-      <main className="max-w-5xl mx-auto px-4 mt-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
-        
-        {/* Left column: Setup, copy/paste active drop zone, AEAT rules card */}
-        <div className="lg:col-span-4 space-y-6">
-          
-          {/* Drag, Drop, and Paste Interactive Zone */}
-          <div
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
-            className={`relative overflow-hidden rounded-2xl border-2 border-dashed p-6 text-center transition-all ${
-              isDragOver 
-                ? 'border-slate-800 bg-slate-100/50 scale-[1.01]' 
-                : 'border-slate-200 bg-white hover:border-slate-400'
-            }`}
-          >
-            <div className="flex flex-col items-center">
-              <div className="w-12 h-12 rounded-xl bg-slate-50 flex items-center justify-center text-slate-700 mb-4 border border-slate-100">
-                <Upload className="w-6 h-6 animate-pulse text-slate-600" />
-              </div>
-              <h3 className="font-display font-bold text-sm text-slate-800 mb-1">
-                Portapapeles Activo
-              </h3>
-              <p className="text-xs text-slate-400 max-w-[240px] mb-4 leading-relaxed">
-                Usa <kbd className="px-1.5 py-0.5 bg-slate-100 border border-slate-200 rounded font-mono text-[10px] text-slate-600 shadow-xs">Impr Pant</kbd> en Windows para capturar, haz clic aquí y pulsa <kbd className="px-1.5 py-0.5 bg-slate-100 border border-slate-200 rounded font-mono text-[10px] text-slate-600 shadow-xs">Ctrl+V</kbd>.
-              </p>
-
-              <button
-                onClick={handleReadClipboard}
-                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-bold text-white bg-slate-800 hover:bg-slate-900 rounded-lg transition-all shadow-xs"
-                id="btn-paste-clipboard"
-              >
-                <Clipboard className="w-4 h-4" />
-                <span>Pegar automáticamente</span>
-              </button>
-
-              <div className="relative mt-3.5 flex items-center w-full justify-center">
-                <span className="text-[10px] text-slate-400 bg-white px-2 z-10 font-bold uppercase tracking-wider">o también</span>
-                <div className="absolute w-full h-[1px] bg-slate-100"></div>
-              </div>
-
-              <label className="mt-3 cursor-pointer text-xs text-slate-700 hover:text-slate-900 font-semibold underline">
-                selecciona un archivo de imagen
-                <input
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  className="hidden"
-                  onChange={handleFileInputChange}
-                />
-              </label>
-            </div>
-          </div>
-
-          {/* Config: Advisory agency parameters */}
-          <div className="bg-white rounded-2xl border border-slate-100 p-5 shadow-xs">
-            <div className="flex items-center gap-2 mb-3.5 pb-2.5 border-b border-slate-50">
-              <Sliders className="w-4.5 h-4.5 text-slate-800" />
-              <h2 className="font-display font-bold text-sm text-slate-800">
-                Datos de tu Asesoría
-              </h2>
-            </div>
-            
-            <div className="space-y-4">
-              <div>
-                <label className="block text-[11px] font-bold text-slate-500 mb-1 uppercase tracking-wider">
-                  Nombre de tu Asesoría
-                </label>
-                <input
-                  type="text"
-                  className="w-full px-3 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-slate-800 bg-slate-50/50"
-                  value={agencyName}
-                  onChange={(e) => handleAgencyNameChange(e.target.value)}
-                  placeholder="Ej. Asesoría E. Marín"
-                />
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-bold text-slate-500 mb-1.5 uppercase tracking-wider">
-                  Formato de la ficha (imagen)
-                </label>
-                <div className="grid grid-cols-3 gap-2">
-                  {([
-                    { id: 'A' as CardFormat, name: 'Equilibrado' },
-                    { id: 'B' as CardFormat, name: 'Recibo' },
-                    { id: 'C' as CardFormat, name: 'Una ojeada' },
-                  ]).map((f) => {
-                    const isFav = cardFormat === f.id;
-                    return (
-                      <button
-                        key={f.id}
-                        onClick={() => handleCardFormatChange(f.id)}
-                        className={`relative px-2 py-2 rounded-lg border text-center transition-all ${
-                          isFav
-                            ? 'border-slate-800 bg-slate-800 text-white'
-                            : 'border-slate-200 bg-slate-50/50 text-slate-600 hover:border-slate-400'
-                        }`}
-                        id={`btn-format-${f.id}`}
-                        title={isFav ? 'Formato favorito (se usa siempre)' : 'Marcar como favorito'}
-                      >
-                        <Star
-                          className={`absolute top-1.5 right-1.5 w-3 h-3 ${isFav ? 'text-amber-400' : 'text-slate-300'}`}
-                          fill={isFav ? 'currentColor' : 'none'}
-                        />
-                        <span className="block text-sm font-bold">{f.id}</span>
-                        <span className="block text-[10px] font-medium mt-0.5 leading-tight">{f.name}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-                <p className="text-[10px] text-slate-400 mt-1.5 flex items-center gap-1">
-                  <Star className="w-2.5 h-2.5 text-amber-400" fill="currentColor" />
-                  <span>El formato con estrella se usa siempre en todas las fichas hasta que elijas otro.</span>
-                </p>
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-bold text-slate-500 mb-1 uppercase tracking-wider">
-                  Firma de WhatsApp
-                </label>
-                <textarea
-                  className="w-full px-3 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-slate-800 bg-slate-50/50 h-16 font-mono"
-                  value={signatureText}
-                  onChange={(e) => handleSignatureChange(e.target.value)}
-                  placeholder="Atentamente,\nMaldonado Consultores"
-                />
-              </div>
-            </div>
-          </div>
-
-          {/* AEAT Deadline regulations informational card */}
-          <div className="bg-slate-900 text-slate-200 rounded-2xl p-5 shadow-sm relative overflow-hidden">
-            <div className="absolute -right-6 -bottom-6 w-24 h-24 bg-slate-800 rounded-full opacity-20"></div>
-            <div className="flex items-start gap-2.5 mb-3">
-              <Calendar className="w-5 h-5 text-emerald-400 shrink-0" />
-              <div>
-                <h3 className="font-display font-bold text-xs text-white uppercase tracking-wider">
-                  Plazos Oficiales AEAT
-                </h3>
-                <p className="text-[10px] text-slate-400 mt-0.5">
-                  Calendario de domiciliaciones fiscales
-                </p>
-              </div>
-            </div>
-
-            <div className="space-y-2.5 text-[11px] border-t border-slate-800 pt-3">
-              <div className="flex justify-between">
-                <span className="text-slate-400 font-medium">1T (Ene - Mar):</span>
-                <span className="font-semibold text-emerald-400">Cargo el 20 de Abril</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-400 font-medium">2T (Abr - Jun):</span>
-                <span className="font-semibold text-emerald-400">Cargo el 20 de Julio</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-400 font-medium">3T (Jul - Sep):</span>
-                <span className="font-semibold text-emerald-400">Cargo el 20 de Octubre</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-400 font-medium">4T (Oct - Dic):</span>
-                <span className="font-semibold text-emerald-400">Cargo el 30 de Enero</span>
-              </div>
-            </div>
-
-            <div className="bg-slate-800/50 rounded-lg p-2.5 mt-3.5 flex gap-2 border border-slate-800">
-              <Info className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-              <p className="text-[10px] text-slate-300 leading-relaxed">
-                Si el día de cargo o límite cae en sábado, domingo o festivo nacional, el sistema de esta app lo desplaza automáticamente al siguiente día hábil.
-              </p>
-            </div>
-          </div>
-
-        </div>
-
-        {/* Right column: Main active notice queue and unified groups */}
-        <div className="lg:col-span-8 space-y-6">
-          <div className="flex items-center justify-between">
-            <h2 className="font-display font-bold text-base text-slate-900 flex items-center gap-2">
-              <FileText className="w-5 h-5 text-slate-800" />
-              <span>Avisos Activos ({groupedNotices.length} Clientes)</span>
-            </h2>
-            <span className="text-xs font-mono text-slate-400">
-              LocalStorage activo
-            </span>
-          </div>
-
-          {groupedNotices.length === 0 ? (
-            <div className="bg-white rounded-2xl border border-slate-100 p-12 text-center shadow-xs">
-              <div className="w-16 h-16 rounded-full bg-slate-50 flex items-center justify-center text-slate-400 mx-auto mb-4 border border-slate-100">
-                <Clipboard className="w-6 h-6" />
-              </div>
-              <h3 className="font-display font-bold text-sm text-slate-800 mb-1">
-                Ninguna captura o aviso cargado
-              </h3>
-              <p className="text-xs text-slate-400 max-w-sm mx-auto mb-6 leading-relaxed">
-                Carga una captura del programa tributario o pulsa el botón "Ver Ejemplo de Prueba" para visualizar cómo se confecciona y calcula un aviso completo.
-              </p>
-              <button
-                onClick={loadExampleData}
-                className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-slate-800 hover:bg-slate-900 rounded-lg transition-all"
-                id="btn-load-demo-empty"
-              >
-                <Sparkles className="w-3.5 h-3.5" />
-                <span>Cargar Ejemplo de Prueba</span>
-              </button>
-            </div>
-          ) : (
-            <div className="space-y-6">
-              {groupedNotices.map((joint) => {
-                const currentTab = activeTab[joint.id] || 'text';
-                const isEditing = editingJointId === joint.id;
-
-                // Estado de verificación del grupo: el peor de sus avisos.
-                const verifState = (() => {
-                  let revisar = false, sinVerificar = false;
-                  joint.notices.forEach((n) => {
-                    const v = n.verificacion;
-                    if (!v || v.estado === 'sin-verificar') sinVerificar = true;
-                    else if (v.estado === 'revisar') revisar = true;
-                  });
-                  return revisar ? 'revisar' : sinVerificar ? 'sin-verificar' : 'ok';
-                })();
-
-                const verifIssues = joint.notices.flatMap((n) => {
-                  const v = n.verificacion;
-                  if (!v) return [];
-                  const prefix = joint.notices.length > 1 ? `Modelo ${n.modelo}: ` : '';
-                  const checks = v.checks
-                    .filter((c) => c.status !== 'ok')
-                    .map((c) => ({ level: c.status, text: `${prefix}${c.message}` }));
-                  const discrepancies = (v.discrepanciasIA || []).map((d) => ({
-                    level: 'error' as const,
-                    text: `${prefix}${FIELD_LABELS[d.campo] || d.campo}: las dos lecturas de la IA no coinciden («${d.primera}» frente a «${d.segunda}»). Compare con la captura.`,
-                  }));
-                  return [...checks, ...discrepancies];
-                });
-
-                return (
-                  <motion.div
-                    key={joint.id}
-                    layout
-                    initial={{ opacity: 0, y: 12 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, scale: 0.95 }}
-                    className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden"
-                  >
-                    
-                    {/* Header of the client block */}
-                    <div className="p-5 border-b border-slate-100 flex flex-col sm:flex-row justify-between sm:items-center gap-4 bg-slate-50/20">
-                      <div>
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <h3 className="font-display font-bold text-slate-950 text-sm leading-tight">
-                            {joint.cliente_nombre}
-                          </h3>
-                          <span className="px-2 py-0.5 rounded bg-slate-100 border border-slate-200 text-[10px] font-bold text-slate-600 uppercase font-mono">
-                            {joint.cliente_nif}
-                          </span>
-                          {verifState === 'ok' && (
-                            <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-[10px] font-bold text-emerald-700" title="Checksums de IBAN/NIF correctos y doble lectura de la IA coincidente">
-                              <ShieldCheck className="w-3 h-3" />
-                              Datos verificados
-                            </span>
-                          )}
-                          {verifState === 'revisar' && (
-                            <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-50 border border-rose-200 text-[10px] font-bold text-rose-700" title="Hay datos que no superan la comprobación. Revise antes de enviar.">
-                              <ShieldAlert className="w-3 h-3" />
-                              Revisar datos
-                            </span>
-                          )}
-                          {verifState === 'sin-verificar' && (
-                            <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-50 border border-slate-200 text-[10px] font-bold text-slate-500" title="No se pudo hacer la verificación automática (aviso antiguo, manual o fallo de red)">
-                              <ShieldQuestion className="w-3 h-3" />
-                              Sin verificar
-                            </span>
-                          )}
-                        </div>
-                        
-                        <p className="text-xs text-slate-500 mt-1 flex items-center gap-1.5 flex-wrap">
-                          <span>{joint.notices.length} {joint.notices.length === 1 ? 'declaración cargada' : 'declaraciones unificadas'}</span>
-                          <span className="text-slate-300">•</span>
-                          <span className="text-[11px] font-mono text-stone-600 bg-stone-100/50 px-1.5 rounded">
-                            Total: {joint.total_importe.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €
-                          </span>
-                        </p>
-                      </div>
-
-                      <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
-                        <button
-                          onClick={() => setEditingJointId(isEditing ? null : joint.id)}
-                          className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors"
-                          id={`btn-edit-toggle-${joint.id}`}
-                        >
-                          <Edit2 className="w-3.5 h-3.5" />
-                          <span>{isEditing ? 'Cancelar' : 'Editar Datos'}</span>
-                        </button>
-                        
-                        <button
-                          onClick={() => handleDeleteClientGroup(joint.id)}
-                          className="p-1.5 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg transition-colors"
-                          title="Eliminar este cliente"
-                          id={`btn-delete-group-${joint.id}`}
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Detalle de la verificación cuando hay algo que revisar */}
-                    {verifIssues.length > 0 && (
-                      <div className="px-5 py-3 bg-rose-50/40 border-b border-rose-100">
-                        <div className="flex items-center gap-1.5 mb-1.5">
-                          <ShieldAlert className="w-4 h-4 text-rose-600" />
-                          <span className="text-xs font-bold text-rose-700">Comprobaciones sobre los datos capturados</span>
-                        </div>
-                        <ul className="space-y-1 pl-1">
-                          {verifIssues.map((issue, i) => (
-                            <li key={i} className={`text-[11px] leading-relaxed flex gap-1.5 ${issue.level === 'error' ? 'text-rose-700' : 'text-amber-700'}`}>
-                              <span className="shrink-0">{issue.level === 'error' ? '✖' : '⚠'}</span>
-                              <span>{issue.text}</span>
-                            </li>
-                          ))}
-                        </ul>
-                        <p className="text-[10px] text-slate-500 mt-1.5">
-                          Compare con la captura asociada (abajo) y corrija con «Editar Datos». Al guardar, las comprobaciones se recalculan.
-                        </p>
-                      </div>
-                    )}
-
-                    {/* Editor view if active */}
-                    {isEditing ? (
-                      <div className="p-5 border-b border-slate-50 bg-slate-50/10">
-                        <NoticeEditor
-                          key={joint.id}
-                          initialDraft={editorDraftRef.current}
-                          onDraftChange={rememberDraft}
-                          notice={joint}
-                          onSave={handleEditSave}
-                          onCancel={cancelEditing}
-                        />
-                      </div>
-                    ) : null}
-
-                    {/* Interactive presentation zone */}
-                    <div className="p-5">
-                      
-                      {/* Tabs to toggle format */}
-                      <div className="flex border-b border-slate-100 mb-5 gap-4">
-                        <button
-                          onClick={() => setActiveTab(prev => ({ ...prev, [joint.id]: 'text' }))}
-                          className={`pb-2 text-xs font-bold flex items-center gap-1.5 border-b-2 transition-all ${
-                            currentTab === 'text'
-                              ? 'border-slate-800 text-slate-900'
-                              : 'border-transparent text-slate-400 hover:text-slate-600'
-                          }`}
-                          id={`tab-text-${joint.id}`}
-                        >
-                          <FileText className="w-4 h-4" />
-                          <span>Vista WhatsApp (Texto)</span>
-                        </button>
-                        
-                        <button
-                          onClick={() => setActiveTab(prev => ({ ...prev, [joint.id]: 'image' }))}
-                          className={`pb-2 text-xs font-bold flex items-center gap-1.5 border-b-2 transition-all ${
-                            currentTab === 'image'
-                              ? 'border-slate-800 text-slate-900'
-                              : 'border-transparent text-slate-400 hover:text-slate-600'
-                          }`}
-                          id={`tab-img-${joint.id}`}
-                        >
-                          <ImageIcon className="w-4 h-4" />
-                          <span>Vista Tarjeta (Imagen)</span>
-                        </button>
-                      </div>
-
-                      {currentTab === 'text' ? (
-                        <div className="space-y-4">
-                          <div className="bg-slate-50 rounded-xl p-4 border border-slate-100 relative">
-                            <pre className="text-[13px] text-slate-800 font-mono whitespace-pre-wrap leading-relaxed max-w-full overflow-x-auto">
-                              {generateWhatsAppText(joint)}
-                            </pre>
-                            
-                            <button
-                              onClick={() => copyWhatsAppText(joint)}
-                              className="absolute top-4 right-4 flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-md shadow-xs transition-all bg-white border border-slate-200 text-slate-700 hover:bg-slate-50"
-                              id={`btn-copy-wa-${joint.id}`}
-                            >
-                              {copiedTextId === joint.id ? (
-                                <>
-                                  <Check className="w-3 h-3 text-emerald-500" />
-                                  <span>¡Copiado!</span>
-                                </>
-                              ) : (
-                                <>
-                                  <Copy className="w-3 h-3" />
-                                  <span>Copiar Texto</span>
-                                </>
-                              )}
-                            </button>
-                          </div>
-                          
-                          <p className="text-[10px] text-slate-400 italic flex items-center gap-1">
-                            <span>💡 Tip:</span>
-                            <span>Este texto está optimizado con negritas (*) para que luzca perfecto y sea legible al enviarlo por WhatsApp.</span>
-                          </p>
-                        </div>
-                      ) : (
-                        <div className="flex flex-col items-center">
-                          <div className="w-full max-w-xl mb-4 rounded-xl border border-slate-200 bg-slate-50/70 p-3">
-                            <label className="flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer">
-                              <input
-                                type="checkbox"
-                                checked={!!joint.mostrarNotaAsesoria}
-                                onChange={(e) => handleAdvisoryNoteChange(joint.id, e.target.checked, joint.notaAsesoria || '')}
-                                className="w-4 h-4 accent-slate-800"
-                              />
-                              <span>{'A\u00f1adir nota manual al pie de la imagen'}</span>
-                            </label>
-                            {joint.mostrarNotaAsesoria && (
-                              <div className="mt-2">
-                                <textarea
-                                  value={joint.notaAsesoria || ''}
-                                  onChange={(e) => handleAdvisoryNoteChange(joint.id, true, e.target.value)}
-                                  maxLength={240}
-                                  rows={3}
-                                  placeholder={'Ej.: Av\u00edsenos si quiere solicitar un aplazamiento.'}
-                                  className="w-full resize-y rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700 focus:border-slate-400 focus:outline-none"
-                                />
-                                <div className="mt-1 text-right text-[10px] text-slate-400">
-                                  {(joint.notaAsesoria || '').length}/240
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                          <NoticeCard
-                            notice={joint}
-                            format={cardFormat}
-                          />
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Screenshot thumbnails footer if images are available */}
-                    {joint.notices.some(n => n.screenshotUrl) && (
-                      <div className="px-5 py-3 bg-slate-50 border-t border-slate-100 flex items-center gap-3 overflow-x-auto">
-                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider shrink-0">
-                          Capturas asociadas:
-                        </span>
-                        <div className="flex gap-2">
-                          {joint.notices.map((tax) => {
-                            if (!tax.screenshotUrl) return null;
-                            return (
-                              <div 
-                                key={tax.id} 
-                                className="relative w-12 h-10 rounded border border-slate-200 overflow-hidden bg-white shrink-0 group cursor-pointer"
-                                title={`Modelo ${tax.modelo} (${tax.ejercicio})`}
-                                onClick={() => {
-                                  // La original en disco si existe; si no (aviso antiguo), la miniatura.
-                                  if (tax.screenshotId) {
-                                    window.open('/api/capturas/' + tax.screenshotId, '_blank');
-                                  } else {
-                                    const win = window.open();
-                                    if (win) win.document.write(`<img src="${tax.screenshotUrl}" style="max-width:100%"/>`);
-                                  }
-                                }}
-                              >
-                                <img 
-                                  src={tax.screenshotUrl} 
-                                  alt="Captura" 
-                                  className="w-full h-full object-cover group-hover:scale-105 transition-transform"
-                                />
-                                <div className="absolute inset-0 bg-slate-900/10 group-hover:bg-transparent"></div>
-                                <div className="absolute bottom-0 right-0 bg-slate-900 text-white text-[7px] font-bold px-0.5 rounded-tl">
-                                  {tax.modelo}
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    )}
-
-                  </motion.div>
-                );
-              })}
-            </div>
-          )}
-
-        </div>
-      </main>
-    </div>
-  );
 }

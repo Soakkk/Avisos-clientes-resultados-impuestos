@@ -2,13 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, readdir, rename, stat, unlink } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { decodeClientDirectory, encodeClientDirectory, sharedClientDirectoryPath } from './clientDirectory';
 import { serializeStorage } from './transactions';
-import { validateBackup } from './backupValidation';
 import type {
   ArchivedNotice,
-  ClientDirectoryFile,
-  NoticeBackup,
   NoticeSearchFilters,
   NoticeState,
 } from './types';
@@ -28,6 +24,34 @@ const defaultState = (): NoticeState => ({
   groupingOverrides: [],
   updatedAt: new Date().toISOString(),
 });
+
+/** Avisos archivados que se conservan: el historial es solo una red de seguridad. */
+export const MAX_ARCHIVED_NOTICES = 300;
+
+/**
+ * El historial guardaba el aviso completo, miniaturas en base64 incluidas
+ * (decenas de KB cada una), y el archivo entero se reescribía en cada guardado.
+ * Con unos cientos de avisos superaba el límite de 20 MB de la petición y la
+ * bandeja dejaba de guardarse. Se quitan las miniaturas (la captura original
+ * sigue en disco) y se conservan solo los avisos más recientes.
+ */
+export function compactState(state: NoticeState): NoticeState {
+  const archived = [...(state.archivedNotices || [])]
+    .sort((a, b) => String(b.archivedAt).localeCompare(String(a.archivedAt)))
+    .slice(0, MAX_ARCHIVED_NOTICES)
+    .map((item) => {
+      const snapshot = item.snapshot as { notices?: Record<string, unknown>[] } | null;
+      if (!snapshot || !Array.isArray(snapshot.notices)) return item;
+      return {
+        ...item,
+        snapshot: {
+          ...snapshot,
+          notices: snapshot.notices.map(({ screenshotUrl: _thumbnail, ...rest }) => rest),
+        },
+      };
+    });
+  return { ...state, archivedNotices: archived };
+}
 
 export function defaultNoticeStoragePath(): string {
   return path.join(os.homedir(), '.generador-avisos-fiscales', 'workspace');
@@ -50,39 +74,14 @@ async function atomicWrite(filePath: string, contents: Buffer): Promise<void> {
 export class NoticeRepository {
   private readonly stateFile: string;
   private readonly capturesDirectory: string;
-  private readonly importJournal: string;
 
-  constructor(
-    private readonly root = defaultNoticeStoragePath(),
-    private readonly clientsFile = sharedClientDirectoryPath(),
-  ) {
+  constructor(private readonly root = defaultNoticeStoragePath()) {
     this.stateFile = path.join(root, 'notices.json');
     this.capturesDirectory = path.join(root, 'capturas');
-    this.importJournal = path.join(root, 'pending-import.json');
   }
 
   async loadQueue(): Promise<NoticeState> {
-    return serializeStorage(this.stateFile, async () => { await this.recoverImport(); return this.readState(); });
-  }
-
-  private async readClients(): Promise<unknown | null> {
-    try { return JSON.parse(await readFile(this.clientsFile, 'utf8')); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
-  }
-
-  private async restoreImport(before: { state: NoticeState; clients: unknown | null }): Promise<void> {
-    if (before.state?.schemaVersion !== 1) throw new Error('Recuperación de importación incompatible.');
-    if (before.clients !== null) await atomicWriteJson(this.clientsFile, before.clients);
-    else await unlink(this.clientsFile).catch((error) => { if (error.code !== 'ENOENT') throw error; });
-    await atomicWriteJson(this.stateFile, before.state);
-    await unlink(this.importJournal);
-  }
-
-  private async recoverImport(): Promise<void> {
-    let before;
-    try { before = JSON.parse(await readFile(this.importJournal, 'utf8')); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
-    await serializeStorage(this.clientsFile, () => this.restoreImport(before));
+    return serializeStorage(this.stateFile, () => this.readState());
   }
 
   private async readState(): Promise<NoticeState> {
@@ -98,17 +97,16 @@ export class NoticeRepository {
 
   async saveQueue(state: NoticeState): Promise<void> {
     if (state.schemaVersion !== 1) throw new Error('Estado de avisos incompatible.');
-    const snapshot = structuredClone(state);
-    await serializeStorage(this.stateFile, async () => { await this.recoverImport(); await atomicWriteJson(this.stateFile, snapshot); });
+    const snapshot = compactState(structuredClone(state));
+    await serializeStorage(this.stateFile, () => atomicWriteJson(this.stateFile, snapshot));
   }
 
   async archive(notice: ArchivedNotice): Promise<NoticeState> {
     return serializeStorage(this.stateFile, async () => {
-      await this.recoverImport();
       const state = await this.readState();
       if (!state.archivedNotices.some((item) => item.id === notice.id)) {
         state.archivedNotices.push(notice);
-        await atomicWriteJson(this.stateFile, state);
+        await atomicWriteJson(this.stateFile, compactState(state));
       }
       return state;
     });
@@ -139,10 +137,8 @@ export class NoticeRepository {
   }
 
   async completeLegacyMigration(): Promise<void> {
-    await serializeStorage(this.stateFile, async () => {
-      await this.recoverImport();
-      await atomicWriteJson(path.join(this.root, 'migration-complete.json'), { schemaVersion: 1 });
-    });
+    await serializeStorage(this.stateFile, () =>
+      atomicWriteJson(path.join(this.root, 'migration-complete.json'), { schemaVersion: 1 }));
   }
 
   async cleanupOrphanedCaptures(maxAgeMs: number, now = Date.now()): Promise<string[]> {
@@ -184,76 +180,5 @@ export class NoticeRepository {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
     return deleted;
-  }
-
-  async exportBackup(): Promise<NoticeBackup> {
-    const state = await this.loadQueue();
-    let clients: ClientDirectoryFile | null = null;
-    try {
-      clients = JSON.parse(await readFile(this.clientsFile, 'utf8')) as ClientDirectoryFile;
-    } catch (error: unknown) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    }
-
-    const captures: Record<string, string> = {};
-    try {
-      for (const fileName of await readdir(this.capturesDirectory)) {
-        if (!fileName.endsWith('.png')) continue;
-        captures[fileName.slice(0, -4)] = (await readFile(path.join(this.capturesDirectory, fileName))).toString('base64');
-      }
-    } catch (error: unknown) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    }
-
-    return {
-      manifest: { product: 'avisos-fiscales', schemaVersion: 1, exportedAt: new Date().toISOString() },
-      state,
-      clients,
-      captures,
-    };
-  }
-
-  async importBackup(backup: NoticeBackup): Promise<void> {
-    const input = structuredClone(backup);
-    validateBackup(input);
-    await serializeStorage(this.stateFile, async () => {
-      await this.recoverImport();
-      const mapping = new Map<string, string>();
-      // Prepare originals under fresh identities; an older workspace never sees overwritten pixels.
-      for (const [id, contents] of Object.entries(input.captures)) {
-        let destination = id;
-        try { await stat(path.join(this.capturesDirectory, `${id}.png`)); destination = `import-${randomUUID()}`; }
-        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-        await this.writeCapture(destination, Buffer.from(contents, 'base64'));
-        mapping.set(id, destination);
-      }
-      const remap = (value: any): void => {
-        if (!value || typeof value !== 'object') return;
-        if (Array.isArray(value)) { value.forEach(remap); return; }
-        for (const [key, child] of Object.entries(value)) {
-          if ((key === 'fileId' || key === 'screenshotId') && typeof child === 'string') {
-            if (!mapping.has(child)) throw new Error('La copia no contiene una captura referenciada.');
-            value[key] = mapping.get(child);
-          } else if (key === 'captureIds' && Array.isArray(child)) {
-            value[key] = child.map((id) => { if (!mapping.has(id)) throw new Error('La copia no contiene una captura referenciada.'); return mapping.get(id); });
-          } else remap(child);
-        }
-      };
-      remap(input.state);
-      const clients = input.clients ? encodeClientDirectory(decodeClientDirectory(input.clients)) : null;
-      await serializeStorage(this.clientsFile, async () => {
-        const before = { state: await this.readState(), clients: await this.readClients() };
-        await atomicWriteJson(this.importJournal, before);
-        try {
-          if (clients) await atomicWriteJson(this.clientsFile, clients);
-          await atomicWriteJson(this.stateFile, input.state);
-          await unlink(this.importJournal);
-        } catch (error) {
-          // A failed rollback leaves the durable journal for the next startup.
-          await this.restoreImport(before);
-          throw error;
-        }
-      });
-    });
   }
 }

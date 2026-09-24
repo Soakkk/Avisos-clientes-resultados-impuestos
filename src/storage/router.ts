@@ -65,23 +65,5 @@ export function createStorageRouter(repository: NoticeRepository, clientDirector
     }
   });
 
-  router.get('/api/backup/export', async (_request, response, next) => {
-    try {
-      response.setHeader('Content-Disposition', `attachment; filename="avisos-fiscales-${new Date().toISOString().slice(0, 10)}.json"`);
-      response.json(await repository.exportBackup());
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  router.post('/api/backup/import', async (request, response, next) => {
-    try {
-      await repository.importBackup(request.body);
-      response.status(204).end();
-    } catch (error) {
-      next(error);
-    }
-  });
-
   return router;
 }
