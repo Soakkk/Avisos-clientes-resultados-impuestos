@@ -86,6 +86,24 @@ export class ClientDirectory {
     }
   }
 
+  /**
+   * Último valor conocido de cada campo de un NIF (el más reciente entre el
+   * valor guardado y las alternativas en conflicto).
+   */
+  async lookup(nifInput: string): Promise<Record<string, string> | null> {
+    const nif = normalizeNif(nifInput || '');
+    if (!nif) return null;
+    const record = (await this.load()).clients[nif];
+    if (!record) return null;
+    const latest: Record<string, string> = {};
+    for (const [field, stored] of Object.entries(record.fields)) {
+      const candidates = [stored, ...(record.conflicts[field] || [])];
+      candidates.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+      if (candidates[0]?.value) latest[field] = candidates[0].value;
+    }
+    return latest;
+  }
+
   async mergeVerified(client: VerifiedClientInput, source: string): Promise<{
     written: boolean;
     rejectedFields: string[];

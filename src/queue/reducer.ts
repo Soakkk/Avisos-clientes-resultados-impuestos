@@ -28,7 +28,10 @@ export function queueReducer(state: CaptureQueueState, action: CaptureQueueActio
     case 'enqueue':
       return { items: [...state.items, ...action.items] };
     case 'start': {
-      if (state.items.some((item) => item.status === 'processing')) return state;
+      // Por defecto una captura cada vez; con clave de pago se pueden leer varias
+      // en paralelo (límite configurable en Ajustes).
+      const limit = Math.max(1, action.limit ?? 1);
+      if (state.items.filter((item) => item.status === 'processing').length >= limit) return state;
       return {
         items: state.items.map((item) => item.id === action.id && item.status === 'pending'
           ? { ...item, status: 'processing', attempts: item.attempts + 1, error: undefined }

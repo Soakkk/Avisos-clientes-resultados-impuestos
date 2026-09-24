@@ -65,5 +65,16 @@ export function createStorageRouter(repository: NoticeRepository, clientDirector
     }
   });
 
+  router.get('/api/clients/:nif', async (request, response, next) => {
+    try {
+      if (!clientDirectory) return response.status(404).end();
+      const found = await clientDirectory.lookup(String(request.params.nif || ''));
+      if (!found) return response.status(404).end();
+      response.json({ nombre: found.nombre || '', iban: found.iban || '' });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   return router;
 }

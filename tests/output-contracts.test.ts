@@ -62,7 +62,7 @@ Le informamos de que hemos procesado la declaración correspondiente al *Modelo 
 • *Importe*: *818,55 €*
 • *Resultado*: *Domiciliación*
 • *Cuenta de cargo*: ES29 **** **** 8239
-• *Fecha de cargo en cuenta (AEAT)*: *Lunes, 20 de Julio de 2026*
+• *Fecha de cargo en cuenta (AEAT)*: *Lunes, 20 de julio de 2026*
 
 ⚠️ *Importe Domiciliado*: Rogamos se asegure de disponer de saldo suficiente en su cuenta para el día del cargo para evitar recargos por parte de la Agencia Tributaria.
 
@@ -107,7 +107,7 @@ Le informamos de que hemos finalizado la confección y presentación de las decl
 • *TOTAL LIQUIDACIÓN*: *900,00 €*
 • *Forma de pago*: *Domiciliación Bancaria*
 • *Cuenta de cargo*: ES29 **** **** 8239
-• *Fecha de cargo en cuenta (AEAT)*: *Lunes, 20 de Julio de 2026*
+• *Fecha de cargo en cuenta (AEAT)*: *Lunes, 20 de julio de 2026*
 
 ⚠️ *Aviso de Domiciliación*: Por favor, compruebe que dispone de saldo de *900,00 €* en la cuenta bancaria para el día del cobro. La Agencia Tributaria realizará el cargo automáticamente.
 
@@ -117,10 +117,13 @@ Atentamente,
 Asesoría E. Marín`);
 });
 
+// Huella del HTML de la ficha: cualquier cambio en su maqueta obliga a revisarla
+// a propósito. Actualizada tras corregir recortes, interlineado de los importes,
+// meses en minúscula y el texto «Resultado de la liquidación».
 const CARD_HASHES: Record<CardFormat, string> = {
-  A: '97736516a4d262666f5959ffc78a249760c72ffdfab57fff9fbb058ac0adb1d1',
-  B: 'a1d49962a3b63040a43570b8ae9be65fe7274bcd44c75062b511db472e1ceb6b',
-  C: '6e35d2ccad7f19f6bb3262087378d5f1e06ae9e4b47a4c9f925c57464019398b',
+  A: '5e183824bf0af4b6b5fc4177465f13feac9672906dd8cce54eb970a71e4d651a',
+  B: 'be7661aba150dd222de622901ff8b56b4a3fb6f0f4c6f82b4bbe19f11942479e',
+  C: '7efca5ec95d6b5f8f56f90ee28fba5157a6bd8e68e248b9d3325e385a3d436f3',
 };
 
 for (const format of ['A', 'B', 'C'] as CardFormat[]) {
@@ -131,3 +134,28 @@ for (const format of ['A', 'B', 'C'] as CardFormat[]) {
     assert.equal(createHash('sha256').update(markup).digest('hex'), CARD_HASHES[format]);
   });
 }
+
+test('una devolución no pide al cliente que pague y muestra el importe en positivo', () => {
+  const text = buildWhatsAppText(makeJoint([makeTax({ importe: -312.4, tipo_resultado: 'Devolución' })]));
+  assert.doesNotMatch(text, /realizar el pago/);
+  assert.match(text, /le ingresará \*312,40 €\*/);
+  assert.match(text, /Cuenta de abono\*: ES29 \*\*\*\* \*\*\*\* 8239/);
+});
+
+test('un 303 domiciliado con un 130 negativo avisa del cargo real, no de la suma', () => {
+  const notices = [makeTax({ id: 'a', importe: 500 }), makeTax({ id: 'b', modelo: '130', modelo_nombre: 'Pago fraccionado IRPF', importe: -200, tipo_resultado: 'Resultado negativo', iban: undefined })];
+  const text = buildWhatsAppText(makeJoint(notices));
+  assert.match(text, /TOTAL LIQUIDACIÓN\*: \*500,00 €\*/);
+  assert.match(text, /Domiciliación Bancaria/);
+  assert.match(text, /\(Negativa\)/);
+  const card = renderToStaticMarkup(createElement(NoticeCard, { notice: makeJoint(notices), format: 'A' }));
+  assert.match(card, /500,00 €/);
+  assert.doesNotMatch(card, /300,00 €/);
+});
+
+test('las plantillas editadas se usan y las líneas sin dato desaparecen', () => {
+  const text = buildWhatsAppText(makeJoint([makeTax({ iban: undefined })]), {
+    templates: { 'uno-domiciliado': 'Hola {cliente}\nCuenta: {cuenta}\nCargo: {fecha_cargo}' },
+  });
+  assert.equal(text, 'Hola CLIENTE DE PRUEBA SL\nCargo: Lunes, 20 de julio de 2026');
+});

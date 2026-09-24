@@ -293,3 +293,13 @@ test('el directorio no reescribe el archivo si los datos verificados no cambian'
   assert.equal((await directory.mergeVerified(input, 'avisos-fiscales')).written, false);
   assert.equal(await readFile(file, 'utf8'), before);
 });
+
+test('el directorio devuelve el último IBAN conocido de un NIF', async () => {
+  const root = await makeRoot();
+  let clock = 0;
+  const directory = new ClientDirectory(path.join(root, 'clientes.json'), () => new Date(Date.UTC(2026, 0, 1) + (clock++) * 86_400_000));
+  await directory.mergeVerified({ nif: '12345678-Z', fields: { iban: { value: 'ES2900811016100006298239', verified: true } } }, 'avisos-fiscales');
+  await directory.mergeVerified({ nif: '12345678Z', fields: { iban: { value: 'ES7100302053091234567895', verified: true } } }, 'avisos-fiscales');
+  assert.deepEqual(await directory.lookup('12345678z'), { iban: 'ES7100302053091234567895' });
+  assert.equal(await directory.lookup('00000000T'), null);
+});

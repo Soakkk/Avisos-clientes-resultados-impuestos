@@ -1,7 +1,8 @@
-import React, { useRef, useState } from 'react';
-import { toBlob, toPng } from 'html-to-image';
-import { JointNotice, formatDateSpanish } from '../types';
-import { Copy, Check, Download, Calendar, Info } from 'lucide-react';
+import React from 'react';
+import { JointNotice, TaxNotice, formatDateSpanish } from '../types';
+import { Calendar, Info } from 'lucide-react';
+import { clientResultLabel, summarizeJoint } from '../summary';
+import { maskIban } from '../whatsapp';
 
 export type CardFormat = 'A' | 'B' | 'C';
 
@@ -27,12 +28,6 @@ const euro = (n: number) => {
   return `${n < 0 ? '-' : ''}${withSep},${dec} €`;
 };
 
-const maskIban = (iban?: string) => {
-  if (!iban) return '';
-  const clean = iban.replace(/\s+/g, '');
-  return clean.replace(/^([A-Z]{2}\d{2})\d+(\d{4})$/, '$1 **** **** $2') || iban;
-};
-
 const MONTHS = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
 const dateShort = (d: Date) => `${d.getDate()} de ${MONTHS[d.getMonth()]} de ${d.getFullYear()}`;
 
@@ -50,20 +45,31 @@ const shortTaxName = (modelo: string, nombre: string) =>
   TAX_NAMES[modelo] || (nombre && nombre.length <= 16 ? nombre : '');
 
 const periodoLabel = (p: string) => {
-  const t: Record<string, string> = { '1T': '1.er trimestre', '2T': '2.º trimestre', '3T': '3.er trimestre', '4T': '4.º trimestre' };
+  const t: Record<string, string> = {
+    '1T': '1.er trimestre', '2T': '2.º trimestre', '3T': '3.er trimestre', '4T': '4.º trimestre',
+    '1P': '1.er pago fraccionado', '2P': '2.º pago fraccionado', '3P': '3.er pago fraccionado', '0A': 'Anual',
+  };
   if (t[p]) return t[p];
   const n = parseInt(p, 10);
   if (!isNaN(n) && n >= 1 && n <= 12) return MONTHS[n - 1].charAt(0).toUpperCase() + MONTHS[n - 1].slice(1);
   return p;
 };
 
-export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
-  const cardRef = useRef<HTMLDivElement>(null);
-  const [copied, setCopied] = useState(false);
+// Resultados que no se pagan: en el desglose de un aviso con pago se enseña el
+// resultado ("Negativa", "A compensar") en vez de un importe negativo que el
+// cliente podría restar del total.
+const SIN_PAGO: TaxNotice['tipo_resultado'][] = ['A compensar', 'Resultado negativo', 'Resultado cero / Sin actividad'];
 
+/**
+ * Ficha que se exporta a imagen para WhatsApp. El diseño es el aprobado: solo
+ * se corrigen datos (totales, fechas, periodos) y recortes de texto.
+ */
+export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
+  const summary = summarizeJoint(notice);
   const single = notice.notices.length === 1 ? notice.notices[0] : null;
-  const first = notice.notices[0];
-  const totalAmount = euro(Math.abs(notice.total_importe));
+  // El total es lo que sale de la cuenta del cliente (o lo que le devuelven):
+  // un 130 negativo ya no resta del 303 que se le va a cargar.
+  const totalAmount = euro(Math.abs(summary.displayTotal));
   const manualNote = notice.mostrarNotaAsesoria ? notice.notaAsesoria?.trim() : '';
 
   // Una devolución es SOLO aquella en la que la AEAT ingresa el dinero al
@@ -71,16 +77,12 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
   // compensar también dan negativo y ahí Hacienda no devuelve nada, solo se
   // descuenta más adelante. Antes se miraba `total_importe < 0` y a esos avisos
   // les ponía "La Agencia Tributaria le devolverá X": un ingreso que no llegaba.
-  const isRefund = notice.notices.some((n) => n.tipo_resultado === 'Devolución');
+  // Si además hay algo que pagar, manda el pago.
+  const isRefund = summary.mode === 'devolucion';
 
-  // Resultados en los que el cliente no paga nada y el importe se arrastra a
-  // declaraciones posteriores (no lo devuelve Hacienda).
-  const SIN_PAGO = ['A compensar', 'Resultado negativo', 'Resultado cero / Sin actividad'];
-  const todosSinPago = notice.notices.length > 0 && notice.notices.every((n) => SIN_PAGO.includes(n.tipo_resultado));
+  const todosSinPago = summary.mode === 'sin-pago';
 
-  const chargeDate = notice.notices.length
-    ? notice.notices.map((n) => new Date(n.fechaCargo)).sort((a, b) => a.getTime() - b.getTime())[0]
-    : null;
+  const chargeDate = summary.dueDate;
 
   // Fecha real de presentación, la que aparece en la captura ("Datos Present.").
   // Si no se pudo leer no se inventa ninguna: la ficha se queda sin esa línea
@@ -95,7 +97,7 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
   })();
 
   const res = (() => {
-    if (notice.todosDomiciliados)
+    if (summary.mode === 'domiciliado')
       return {
         label: 'Domiciliado', c: '#23603B', bg: '#EAF3EC', bd: '#CFE5D5', dot: '#2E6B43',
         shortMsg: 'Se cargará automáticamente en su cuenta.',
@@ -131,7 +133,7 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
     return {
       label: 'A pagar', c: '#8A5A12', bg: '#FBF1E0', bd: '#EFDEBE', dot: '#B4761E',
       shortMsg: 'Recuerde ingresarlo antes de la fecha límite.',
-      iban: false, dateLabel: 'Fecha límite', sinImporte: false,
+      iban: false, dateLabel: 'Fecha límite de pago', sinImporte: false,
     };
   })();
 
@@ -143,44 +145,17 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
   const taxBig = single
     ? shortTaxName(single.modelo, single.modelo_nombre) || `Modelo ${single.modelo}`
     : 'Resumen de impuestos';
-  const periodoText = `${periodoLabel(first?.periodo || '')} ${first?.ejercicio || ''}`.trim();
+  // Con impuestos de periodos distintos se enseñan todos, no solo el primero.
+  const periodoText = summary.periods
+    .map((item) => `${periodoLabel(item.periodo)} ${item.ejercicio}`.trim())
+    .filter(Boolean)
+    .join(' · ');
   const amountLabel = (() => {
-    if (notice.todosDomiciliados) return single ? 'Importe domiciliado' : 'Total domiciliado';
+    if (summary.mode === 'domiciliado') return single ? 'Importe domiciliado' : 'Total domiciliado';
     if (res.label === 'A devolver') return single ? 'Importe a devolver' : 'Total a devolver';
     if (res.label === 'Sin actividad') return 'Importe';
     return single ? 'Importe a ingresar' : 'Total a pagar';
   })();
-
-  const exportOpts = { pixelRatio: 2, backgroundColor: PAGE, cacheBust: true, skipFonts: true };
-
-  const handleCopy = async () => {
-    if (!cardRef.current) return;
-    try {
-      await toBlob(cardRef.current, exportOpts);
-      const blob = await toBlob(cardRef.current, exportOpts);
-      if (!blob) throw new Error('sin imagen');
-      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      console.error('Error copiando la imagen', err);
-      handleDownload();
-    }
-  };
-
-  const handleDownload = async () => {
-    if (!cardRef.current) return;
-    try {
-      await toPng(cardRef.current, exportOpts);
-      const dataUrl = await toPng(cardRef.current, exportOpts);
-      const link = document.createElement('a');
-      link.download = `Aviso_${notice.cliente_nombre.replace(/\s+/g, '_')}.png`;
-      link.href = dataUrl;
-      link.click();
-    } catch (err) {
-      console.error('Error descargando la imagen', err);
-    }
-  };
 
   // Tamaño del importe auto-ajustado a su longitud: un total de 7 cifras a
   // tamaño fijo se salía de la ficha (o se solapaba) en la imagen exportada.
@@ -200,7 +175,7 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
         <div style={{ minWidth: 0, flex: 1 }}>
           {single && (
-            <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.07em', color: NAVY, textTransform: 'uppercase' }}>Resultado liquidación</div>
+            <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.07em', color: NAVY, textTransform: 'uppercase' }}>Resultado de la liquidación</div>
           )}
           <div style={{ fontFamily: SERIF, fontWeight: 700, fontSize: 19, color: NAVY, lineHeight: 1.2, marginTop: single ? 1 : 0, overflowWrap: 'break-word' }}>{taxBig}</div>
           <div style={{ fontSize: 12, color: LABEL, marginTop: 3 }}>{periodoText}</div>
@@ -224,20 +199,26 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
   // pisando la fila siguiente, aunque en pantalla estaba perfecto.
   // Por eso el texto ocupa el hueco libre (flex: 1) en vez de ajustarse a su
   // contenido, y modelo + nombre van en una unidad que no se puede partir.
+  //
+  // El bloque "Modelo 303" no se parte nunca; el nombre corto puede bajar a la
+  // línea siguiente si no cabe, en vez de montarse sobre el importe.
   const Desglose = () => (
     <div style={{ fontSize: 13 }}>
       {notice.notices.map((tax) => {
         const nombre = shortTaxName(tax.modelo, tax.modelo_nombre);
+        const sinPago = SIN_PAGO.includes(tax.tipo_resultado) || (tax.tipo_resultado === 'Devolución' && !isRefund);
         return (
           <div key={tax.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10, padding: '6px 0', borderTop: `1px solid ${ROW}` }}>
-            <span style={{ color: INK, flex: 1, minWidth: 0, whiteSpace: 'nowrap' }}>
-              <span style={{ fontWeight: 700 }}>Modelo {tax.modelo}</span>
-              {nombre && <span style={{ color: LABEL }}> · {nombre}</span>}
+            <span style={{ color: INK, flex: 1, minWidth: 0, lineHeight: 1.35 }}>
+              <span style={{ fontWeight: 700, whiteSpace: 'nowrap' }}>Modelo {tax.modelo}</span>
+              {nombre && <span style={{ color: LABEL, whiteSpace: 'nowrap' }}> · {nombre}</span>}
             </span>
             {/* Sin importes cuando no hay nada que pagar: el desglose queda como
                 la lista de las declaraciones presentadas, que es lo que interesa. */}
             {!res.sinImporte && (
-              <span style={{ fontFamily: SERIF, whiteSpace: 'nowrap', flexShrink: 0 }}>{euro(tax.importe)}</span>
+              sinPago
+                ? <span style={{ color: LABEL, fontSize: 12.5, whiteSpace: 'nowrap', flexShrink: 0 }}>{tax.tipo_resultado === 'Devolución' ? `A devolver ${euro(Math.abs(tax.importe))}` : clientResultLabel(tax.tipo_resultado)}</span>
+                : <span style={{ fontFamily: SERIF, lineHeight: 1.35, whiteSpace: 'nowrap', flexShrink: 0 }}>{euro(tax.importe)}</span>
             )}
           </div>
         );
@@ -312,7 +293,7 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
           <div style={{ fontSize: 12.5, color: res.c, marginTop: 3, lineHeight: 1.4 }}>{res.shortMsg}</div>
         </div>
         {!res.sinImporte && (
-          <div style={{ fontFamily: SERIF, fontSize: fitAmount(26), color: res.c, whiteSpace: 'nowrap', flexShrink: 0 }}>{totalAmount}</div>
+          <div style={{ fontFamily: SERIF, fontSize: fitAmount(26), lineHeight: 1.25, color: res.c, whiteSpace: 'nowrap', flexShrink: 0 }}>{totalAmount}</div>
         )}
       </div>
       {!single && <Desglose />}
@@ -328,7 +309,7 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
       {!res.sinImporte && (
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, padding: '10px 0', borderTop: `2px solid ${NAVY}`, marginTop: single ? 12 : 5 }}>
           <span style={{ fontSize: 13, fontWeight: 700, color: NAVY, letterSpacing: single ? 0 : '0.04em', whiteSpace: 'nowrap' }}>{single ? amountLabel : 'TOTAL'}</span>
-          <span style={{ fontFamily: SERIF, fontSize: fitAmount(25), color: NAVY, whiteSpace: 'nowrap', flexShrink: 0 }}>{totalAmount}</span>
+          <span style={{ fontFamily: SERIF, fontSize: fitAmount(25), lineHeight: 1.25, color: NAVY, whiteSpace: 'nowrap', flexShrink: 0 }}>{totalAmount}</span>
         </div>
       )}
       <div style={{ margin: res.sinImporte ? '12px 0 2px' : '8px 0 2px' }}><StatusLine /></div>
@@ -344,7 +325,7 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
         {!res.sinImporte && (
           <>
             <div style={{ fontSize: 12, color: LABEL, letterSpacing: '0.04em' }}>{amountLabel}</div>
-            <div style={{ fontFamily: SERIF, fontSize: fitAmount(36), color: NAVY, lineHeight: 1.05, margin: '5px 0 9px', whiteSpace: 'nowrap' }}>{totalAmount}</div>
+            <div style={{ fontFamily: SERIF, fontSize: fitAmount(36), color: NAVY, lineHeight: 1.2, margin: '4px 0 10px', whiteSpace: 'nowrap' }}>{totalAmount}</div>
           </>
         )}
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, color: res.c, fontSize: 14, fontWeight: 700, background: res.bg, border: `1px solid ${res.bd}`, padding: '4px 12px', borderRadius: 999, whiteSpace: 'nowrap' }}>
@@ -371,7 +352,9 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
                 <span style={{ whiteSpace: 'nowrap' }}>
                   <span style={{ fontWeight: 700, color: INK }}>{tax.modelo}</span>
                   {nombre ? ` ${nombre}` : ''}
-                  {!res.sinImporte && ` · ${euro(tax.importe).replace(' €', '')}`}
+                  {!res.sinImporte && (SIN_PAGO.includes(tax.tipo_resultado)
+                    ? ` · ${clientResultLabel(tax.tipo_resultado)}`
+                    : ` · ${euro(tax.importe).replace(' €', '')}`)}
                 </span>
               </React.Fragment>
             );
@@ -384,7 +367,7 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
               <Calendar size={15} color={NAVY} style={{ flexShrink: 0 }} />
               <span style={{ fontSize: 13, color: INK, whiteSpace: 'nowrap' }}>
-                {res.dateLabel === 'Fecha límite'
+                {res.dateLabel === 'Fecha límite de pago'
                   ? 'Ingresar antes del '
                   : res.dateLabel === 'Fecha de presentación'
                     ? 'Presentada el '
@@ -403,58 +386,24 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
   );
 
   return (
-    <div className="w-full flex flex-col items-center">
-      {/* ===== FICHA (lo que se exporta a imagen): tarjeta cuadrada y limpia ===== */}
-      <div
-        ref={cardRef}
-        style={{
-          width: 440,
-          boxSizing: 'border-box',
-          background: PAGE,
-          border: `1px solid ${BORDER}`,
-          fontFamily: "'Segoe UI', Arial, 'Helvetica Neue', sans-serif",
-          color: INK,
-        }}
-      >
-        <div style={{ padding: '18px 20px' }}>
-          <Header />
-          {format === 'A' && <BodyA />}
-          {format === 'B' && <BodyB />}
-          {format === 'C' && <BodyC />}
-        </div>
-        <NotaAsesoria />
-
+    <div
+      data-notice-card
+      style={{
+        width: 440,
+        boxSizing: 'border-box',
+        background: PAGE,
+        border: `1px solid ${BORDER}`,
+        fontFamily: "'Segoe UI', Arial, 'Helvetica Neue', sans-serif",
+        color: INK,
+      }}
+    >
+      <div style={{ padding: '18px 20px' }}>
+        <Header />
+        {format === 'A' && <BodyA />}
+        {format === 'B' && <BodyB />}
+        {format === 'C' && <BodyC />}
       </div>
-
-      {/* ===== Botones ===== */}
-      <div className="flex gap-3 mt-4 w-full justify-center">
-        <button
-          onClick={handleCopy}
-          className="flex items-center gap-2 px-4 py-2.5 text-sm font-bold rounded-lg text-white bg-slate-800 hover:bg-slate-900 transition-colors shadow-sm"
-          id={`btn-copy-img-${notice.cliente_nif}`}
-        >
-          {copied ? (
-            <>
-              <Check className="w-3.5 h-3.5 text-emerald-400" />
-              <span>¡Copiada al portapapeles!</span>
-            </>
-          ) : (
-            <>
-              <Copy className="w-3.5 h-3.5" />
-              <span>Copiar Imagen para WhatsApp</span>
-            </>
-          )}
-        </button>
-
-        <button
-          onClick={handleDownload}
-          className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 transition-colors"
-          id={`btn-dl-img-${notice.cliente_nif}`}
-        >
-          <Download className="w-3.5 h-3.5" />
-          <span>Descargar PNG</span>
-        </button>
-      </div>
+      <NotaAsesoria />
     </div>
   );
 };

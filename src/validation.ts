@@ -6,7 +6,8 @@
 export type CheckStatus = 'ok' | 'warn' | 'error';
 
 export interface FieldCheck {
-  field: 'iban' | 'cliente_nif' | 'importe' | 'periodo' | 'modelo' | 'cliente_nombre' | 'ejercicio' | 'tipo_resultado';
+  field: 'iban' | 'cliente_nif' | 'importe' | 'periodo' | 'modelo' | 'cliente_nombre' | 'ejercicio' | 'tipo_resultado'
+    | 'numero_justificante' | 'plazo';
   status: CheckStatus;
   message: string;
 }
@@ -140,8 +141,14 @@ export function validateModelo(modelo: string): FieldCheck {
   return { field: 'modelo', status: 'ok', message: `Modelo ${clean} reconocido.` };
 }
 
-export function validatePeriodo(periodo: string): FieldCheck {
+export function validatePeriodo(periodo: string, modelo = ''): FieldCheck {
   const clean = (periodo || '').toUpperCase().trim();
+  if (!clean) return { field: 'periodo', status: 'error', message: 'No se ha capturado el periodo.' };
+  if (/^[1-3]P$/.test(clean)) {
+    return modelo.trim() === '202'
+      ? { field: 'periodo', status: 'ok', message: 'Pago fraccionado del 202 válido.' }
+      : { field: 'periodo', status: 'error', message: `El periodo «${clean}» solo existe en el modelo 202.` };
+  }
   if (/^[1-4]T$/.test(clean)) return { field: 'periodo', status: 'ok', message: 'Periodo trimestral válido.' };
   const n = parseInt(clean, 10);
   if (!isNaN(n) && n >= 1 && n <= 12 && /^\d{1,2}$/.test(clean)) {
@@ -150,13 +157,14 @@ export function validatePeriodo(periodo: string): FieldCheck {
   if (/^0A$/.test(clean)) return { field: 'periodo', status: 'ok', message: 'Periodo anual (0A).' };
   return {
     field: 'periodo', status: 'error',
-    message: `El periodo «${periodo}» no es válido (debe ser 1T-4T, 01-12 o 0A).`,
+    message: `El periodo «${periodo}» no es válido (debe ser 1T-4T, 01-12, 1P-3P o 0A).`,
   };
 }
 
-export function validateEjercicio(ejercicio: string): FieldCheck {
+export function validateEjercicio(ejercicio: string, today = new Date()): FieldCheck {
+  if (!(ejercicio || '').trim()) return { field: 'ejercicio', status: 'error', message: 'No se ha capturado el ejercicio.' };
   const n = parseInt((ejercicio || '').trim(), 10);
-  const current = new Date().getFullYear();
+  const current = today.getFullYear();
   if (isNaN(n) || n < 2000 || n > current + 1) {
     return {
       field: 'ejercicio', status: 'error',
@@ -252,6 +260,111 @@ export function validateTipoResultado(tipoResultado: string, importe: number): F
   return { field: 'tipo_resultado', status: 'ok', message: 'Tipo de resultado coherente.' };
 }
 
+// ---- Códigos de control adicionales ----
+
+/**
+ * El número de justificante de una autoliquidación tiene 13 dígitos y empieza
+ * por el número del modelo (3036… para un 303). Si la IA lee un modelo y el
+ * justificante dice otro, uno de los dos está mal leído.
+ */
+export function validateJustificante(justificante: string | undefined, modelo: string): FieldCheck | null {
+  const clean = (justificante || '').replace(/[\s.-]+/g, '');
+  if (!clean) return null;
+  if (!/^\d{13}$/.test(clean)) {
+    return { field: 'numero_justificante', status: 'warn', message: `El justificante «${clean}» no tiene 13 dígitos: puede estar mal leído.` };
+  }
+  const model = (modelo || '').trim();
+  if (model && !clean.startsWith(model)) {
+    return {
+      field: 'numero_justificante', status: 'error',
+      message: `El justificante empieza por ${clean.slice(0, 3)}, pero el modelo leído es el ${model}: uno de los dos está mal.`,
+    };
+  }
+  return { field: 'numero_justificante', status: 'ok', message: 'El justificante coincide con el modelo.' };
+}
+
+const PERSONA_FISICA_MODELS = new Set(['100', '130', '131']);
+const SOCIEDAD_MODELS = new Set(['200', '202']);
+
+/** El 130/131/100 son de personas físicas; el 200/202, de sociedades. */
+export function validateTitular(nif: string, modelo: string): FieldCheck | null {
+  const clean = (nif || '').replace(/[\s.-]+/g, '').toUpperCase();
+  const model = (modelo || '').trim();
+  const isPerson = /^(\d{8}|[XYZ]\d{7})[A-Z]$/.test(clean);
+  const isCompany = /^[ABCDEFGHJNPQRSUVW]\d{7}[0-9A-J]$/.test(clean);
+  if (PERSONA_FISICA_MODELS.has(model) && isCompany) {
+    return { field: 'cliente_nif', status: 'warn', message: `El modelo ${model} es de personas físicas, pero el NIF es de una entidad. Revise el NIF o el modelo.` };
+  }
+  if (SOCIEDAD_MODELS.has(model) && isPerson) {
+    return { field: 'cliente_nif', status: 'warn', message: `El modelo ${model} es de sociedades, pero el NIF es de una persona física. Revise el NIF o el modelo.` };
+  }
+  return null;
+}
+
+const DAY_MS = 86_400_000;
+const shortDate = (date: Date) => date.toLocaleDateString('es-ES', { day: 'numeric', month: 'long', year: 'numeric' });
+
+/**
+ * Plazo del periodo frente a la fecha de hoy. Un aviso se envía normalmente
+ * durante el plazo: si el periodo venció hace meses, o aún no ha empezado,
+ * probablemente se ha leído mal el periodo o el ejercicio.
+ */
+export function validatePlazo(finPlazo: Date | null, today = new Date()): FieldCheck {
+  if (!finPlazo) {
+    return { field: 'plazo', status: 'error', message: 'No se ha podido calcular el plazo de la AEAT con este modelo, periodo y ejercicio.' };
+  }
+  const days = Math.round((finPlazo.getTime() - today.getTime()) / DAY_MS);
+  if (days < -75) {
+    return { field: 'plazo', status: 'warn', message: `El plazo de este periodo terminó el ${shortDate(finPlazo)}. Compruebe el periodo y el ejercicio.` };
+  }
+  if (days > 110) {
+    return { field: 'plazo', status: 'warn', message: `El plazo de este periodo no termina hasta el ${shortDate(finPlazo)}. Compruebe el periodo y el ejercicio.` };
+  }
+  return { field: 'plazo', status: 'ok', message: `Plazo hasta el ${shortDate(finPlazo)}.` };
+}
+
+export interface KnownClient {
+  nombre?: string;
+  iban?: string;
+}
+
+const normalizeName = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Za-z0-9]+/g, ' ').trim().toUpperCase();
+
+/**
+ * Compara con lo último guardado de ese NIF en el directorio común de clientes.
+ * Un IBAN distinto al de la vez anterior es justo el error que más importa ver.
+ * Si el usuario ya lo ha revisado a mano, se informa sin bloquear.
+ */
+export function validateAgainstDirectory(
+  data: { iban?: string; cliente_nombre: string },
+  known: KnownClient | undefined,
+  reviewedByUser = false,
+): FieldCheck[] {
+  if (!known) return [];
+  const checks: FieldCheck[] = [];
+  const iban = (data.iban || '').replace(/\s+/g, '').toUpperCase();
+  const knownIban = (known.iban || '').replace(/\s+/g, '').toUpperCase();
+  if (iban && knownIban && iban !== knownIban) {
+    checks.push({
+      field: 'iban',
+      status: reviewedByUser ? 'ok' : 'warn',
+      message: reviewedByUser
+        ? `IBAN distinto del usado la vez anterior (…${knownIban.slice(-4)}), confirmado a mano.`
+        : `El IBAN no coincide con el usado la vez anterior para este cliente (…${knownIban.slice(-4)}). Confirme que ha cambiado de cuenta.`,
+    });
+  }
+  if (known.nombre && data.cliente_nombre && normalizeName(known.nombre) !== normalizeName(data.cliente_nombre)) {
+    checks.push({
+      field: 'cliente_nombre',
+      status: reviewedByUser ? 'ok' : 'warn',
+      message: reviewedByUser
+        ? `Nombre distinto del guardado («${known.nombre}»), confirmado a mano.`
+        : `Este NIF figuraba como «${known.nombre}». Compruebe el nombre o el NIF.`,
+    });
+  }
+  return checks;
+}
+
 export function verifyNoticeFields(data: {
   modelo: string;
   periodo: string;
@@ -264,7 +377,7 @@ export function verifyNoticeFields(data: {
 }): FieldCheck[] {
   const checks: FieldCheck[] = [
     validateModelo(data.modelo),
-    validatePeriodo(data.periodo),
+    validatePeriodo(data.periodo, data.modelo),
     validateEjercicio(data.ejercicio),
     validateNIF(data.cliente_nif),
     validateNombre(data.cliente_nombre),

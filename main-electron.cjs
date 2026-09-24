@@ -53,10 +53,11 @@ function createWindow() {
     minHeight: 720,
     title: 'Generador de Avisos Fiscales',
     titleBarStyle: 'hidden',
+    // Mismo color y alto que la barra de título de la interfaz.
     titleBarOverlay: {
-      color: '#0B3159',
-      symbolColor: '#FFFFFF',
-      height: 44,
+      color: '#1F3550',
+      symbolColor: '#E9F0F8',
+      height: 36,
     },
     icon: path.join(__dirname, 'assets', 'app.ico'),
     autoHideMenuBar: true,

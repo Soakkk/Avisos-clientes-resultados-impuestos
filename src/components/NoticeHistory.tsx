@@ -1,4 +1,4 @@
-import { CalendarDays, ExternalLink, RotateCcw, Search } from 'lucide-react';
+import { CalendarDays, ExternalLink, RotateCcw, Search, X } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { searchArchivedNotices } from '../history';
 import type { ArchivedNotice } from '../storage/types';
@@ -7,10 +7,12 @@ export function NoticeHistory({
   items,
   onReopen,
   onViewCapture,
+  onClose,
 }: {
   items: ArchivedNotice[];
   onReopen: (notice: ArchivedNotice) => void;
   onViewCapture: (captureId: string) => void;
+  onClose?: () => void;
 }) {
   const [query, setQuery] = useState('');
   const [model, setModel] = useState('');
@@ -26,9 +28,12 @@ export function NoticeHistory({
       <div className="panel-heading">
         <div>
           <h2 id="history-heading">Historial</h2>
-          <p>Avisos archivados y capturas originales</p>
+          <p>Últimos avisos enviados y archivados (se conservan los 300 más recientes)</p>
         </div>
         <span className="history-count">{results.length} resultados</span>
+        {onClose && (
+          <button type="button" className="icon-btn" onClick={onClose} aria-label="Cerrar historial"><X aria-hidden="true" /></button>
+        )}
       </div>
       <div className="history-filters">
         <label className="search-field"><span>Buscar</span><span className="field-control"><Search aria-hidden="true" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Nombre o NIF" /></span></label>
