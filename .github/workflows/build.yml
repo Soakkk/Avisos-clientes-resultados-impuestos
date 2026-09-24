@@ -6,6 +6,11 @@ on:
       - 'v*'
   pull_request:
   workflow_dispatch:
+    inputs:
+      publicar:
+        description: 'Publicar la versión de package.json como release (crea la etiqueta vX.Y.Z)'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -65,10 +70,20 @@ jobs:
             dist-electron/*.exe
             dist-electron/*.yml
             dist-electron/*.blockmap
+      - name: Leer versión
+        id: version
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          "tag=v$version" >> $env:GITHUB_OUTPUT
       - name: Publicar release
-        if: startsWith(github.ref, 'refs/tags/')
+        # Con una etiqueta vX.Y.Z, o a mano desde Actions marcando «publicar»:
+        # en ese caso la etiqueta se crea con la versión de package.json.
+        if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.publicar)
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           files: |
             dist-electron/*.exe
             dist-electron/*.yml
