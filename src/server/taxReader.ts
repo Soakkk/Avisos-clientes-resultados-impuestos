@@ -119,6 +119,17 @@ export function isQuotaError(error: unknown): boolean {
 
 const isThinkingConfigError = (error: unknown) => /thinking/i.test(errorText(error)) && /400|INVALID_ARGUMENT|invalid/i.test(errorText(error));
 
+/**
+ * Código HTTP para el frontend: 400 si reintentar no sirve (clave o modelo),
+ * 429 si es la cuota y 503 si es un fallo temporal de Google.
+ */
+export function geminiErrorStatus(error: unknown): number {
+  const text = errorText(error);
+  if (isQuotaError(error)) return 429;
+  if (/401|403|api key|api_key|permission|expired/i.test(text) || isModelUnavailableError(error)) return 400;
+  return 503;
+}
+
 export function describeGeminiError(error: unknown): string {
   const text = errorText(error);
   const lower = text.toLowerCase();

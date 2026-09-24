@@ -92,3 +92,11 @@ test('guardar ajustes conserva la clave ya guardada', () => {
   store.write({ model: 'gemini-3.7-flash', concurrency: 2 });
   assert.deepEqual(store.read(), { apiKey: 'clave', model: 'gemini-3.7-flash', verifyModel: DEFAULT_AI_SETTINGS.verifyModel, concurrency: 2 });
 });
+
+test('los errores de clave o modelo no se reintentan y la cuota sí', async () => {
+  const { geminiErrorStatus } = await import('../src/server/taxReader');
+  assert.equal(geminiErrorStatus(new Error('403 PERMISSION_DENIED: API key not valid')), 400);
+  assert.equal(geminiErrorStatus(new Error('404 NOT_FOUND: model not found')), 400);
+  assert.equal(geminiErrorStatus(new Error('429 RESOURCE_EXHAUSTED: quota')), 429);
+  assert.equal(geminiErrorStatus(new Error('TIMEOUT_GEMINI: sin respuesta')), 503);
+});

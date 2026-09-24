@@ -450,8 +450,6 @@ export default function App() {
   // Pegado global (Ctrl+V en cualquier parte de la ventana)
   useEffect(() => {
     const handlePaste = (e: ClipboardEvent) => {
-      const target = e.target as HTMLElement | null;
-      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
       const items = e.clipboardData?.items;
       if (!items) return;
       const files: File[] = [];
@@ -669,9 +667,12 @@ export default function App() {
     const active = rawNoticesRef.current.filter((notice) => !removedIds.has(notice.id));
     rawNoticesRef.current = active;
     setRawNotices(active);
+    // Se quitan solo las capturas de este aviso. No se rehidrata la bandeja:
+    // eso devolvería a «pendiente» las capturas que se están leyendo en paralelo.
+    const archivedItems = queueItemsRef.current.filter((item) => item.jointId === joint.id);
     const remainingQueue = queueItemsRef.current.filter((item) => item.jointId !== joint.id);
     queueItemsRef.current = remainingQueue;
-    captureQueue.hydrate(remainingQueue);
+    archivedItems.forEach((item) => captureQueue.remove(item.id));
     await persistWorkspace(remainingQueue, active);
     return archive;
   };

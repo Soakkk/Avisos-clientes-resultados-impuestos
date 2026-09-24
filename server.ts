@@ -8,7 +8,7 @@ import { NoticeRepository } from "./src/storage/noticeRepository";
 import { createStorageRouter } from "./src/storage/router";
 import { ClientDirectory } from "./src/storage/clientDirectory";
 import { ConfigStore, RECOMMENDED_MODELS, MAX_CONCURRENCY, normalizeSettings, type AiSettings } from "./src/server/aiSettings";
-import { describeGeminiError, parseImagePayload, readTaxCapture, withTimeout } from "./src/server/taxReader";
+import { describeGeminiError, geminiErrorStatus, parseImagePayload, readTaxCapture, withTimeout } from "./src/server/taxReader";
 
 // Load environment variables in development
 dotenv.config();
@@ -222,7 +222,9 @@ app.post("/api/gemini/read-tax", async (req, res) => {
     return res.json(await readTaxCapture(image, aiSettings, { generate }));
   } catch (error: any) {
     console.error("Error leyendo la captura con Gemini:", error);
-    return res.status(503).json({ error: describeGeminiError(error) });
+    // Una clave o un modelo no válidos no se arreglan reintentando: la captura
+    // pasa a revisión con el mensaje, en vez de agotar los reintentos.
+    return res.status(geminiErrorStatus(error)).json({ error: describeGeminiError(error) });
   }
 });
 
