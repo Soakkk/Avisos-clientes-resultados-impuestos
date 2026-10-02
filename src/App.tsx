@@ -104,6 +104,10 @@ const EXPORT_OPTIONS = { pixelRatio: 2, backgroundColor: '#FBF9F5', cacheBust: t
 
 const DISCARD_UNDO_MS = 8000;
 
+// Si un guardado falla, la bandeja se pausa y se reintenta sola con estas
+// esperas (la última se repite) hasta que el disco vuelva a aceptar escrituras.
+const STORAGE_RETRY_DELAYS = [2000, 5000, 15000, 30000];
+
 export default function App() {
   const [rawNotices, setRawNotices] = useState<TaxNotice[]>([]);
   const [archivedNotices, setArchivedNotices] = useState<ArchivedNotice[]>([]);
@@ -123,6 +127,11 @@ export default function App() {
   const groupingOverridesRef = useRef<GroupingOverride[]>([]);
   const selectedJointIdRef = useRef<string | null>(null);
   const workspaceWrites = useRef<Promise<unknown>>(Promise.resolve());
+  const hydratedRef = useRef(false);
+  const storageFailedRef = useRef(false);
+  const storageRetryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const storageRetryCount = useRef(0);
+  const unmountedRef = useRef(false);
   const editorDraftRef = useRef<EditorDraft | null>(null);
   const processImageFileRef = useRef<(file: File, persistedFileId?: string) => Promise<{ jointId: string }>>();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -142,10 +151,10 @@ export default function App() {
   const feedback = useFeedback();
   const { notify, confirm } = feedback;
 
-  const persistWorkspace = useCallback(async (
+  const persistWorkspace = useCallback(async function persist(
     queueItems = queueItemsRef.current,
     activeNotices = rawNoticesRef.current,
-  ) => {
+  ): Promise<void> {
     const state: NoticeState = {
       schemaVersion: 1,
       queue: queueItems,
@@ -163,16 +172,49 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body,
       });
-      if (!response.ok) throw new Error('No se pudo guardar la bandeja en disco.');
+      if (!response.ok) {
+        const detail = await response.json().then((data) => data?.error, () => '');
+        throw new Error(detail
+          ? `No se pudo guardar la bandeja en disco. ${detail}`
+          : `No se pudo guardar la bandeja en disco (error ${response.status}).`);
+      }
     });
     workspaceWrites.current = writing;
     try {
       await writing;
     } catch (error) {
+      storageFailedRef.current = true;
       setStorageReady(false);
       setStorageError(error instanceof Error ? error.message : String(error));
+      // Antes la bandeja quedaba detenida hasta reiniciar la app aunque el
+      // fallo fuese pasajero. Ahora se reintenta con lo último que hay en memoria.
+      if (hydratedRef.current && !unmountedRef.current && !storageRetryTimer.current) {
+        const delay = STORAGE_RETRY_DELAYS[Math.min(storageRetryCount.current, STORAGE_RETRY_DELAYS.length - 1)];
+        storageRetryCount.current += 1;
+        storageRetryTimer.current = setTimeout(() => {
+          storageRetryTimer.current = null;
+          void persist().catch(() => {});
+        }, delay);
+      }
       throw error;
     }
+    if (storageFailedRef.current && hydratedRef.current) {
+      storageFailedRef.current = false;
+      storageRetryCount.current = 0;
+      if (storageRetryTimer.current) clearTimeout(storageRetryTimer.current);
+      storageRetryTimer.current = null;
+      setStorageError('');
+      setStorageReady(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    unmountedRef.current = false;
+    return () => {
+      unmountedRef.current = true;
+      if (storageRetryTimer.current) clearTimeout(storageRetryTimer.current);
+      storageRetryTimer.current = null;
+    };
   }, []);
 
   // Escribir en la nota o en el editor no debe reescribir el archivo en cada
@@ -304,6 +346,7 @@ export default function App() {
         const migration = await fetch('/api/notices/migration-complete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
         if (!migration.ok) throw new Error('No se pudo confirmar la migración de los avisos.');
         try { localStorage.removeItem('aeat_raw_notices'); } catch { /* nada que migrar */ }
+        hydratedRef.current = true;
         setStorageReady(true);
         hydration.resolve();
       })
@@ -808,7 +851,10 @@ export default function App() {
 
       {(storageError || captureQueue.storageError) && (
         <div role="alert" className="banner" data-tone="danger">
-          No se puede guardar el trabajo: {storageError || captureQueue.storageError} La bandeja está detenida hasta que se recupere el almacenamiento.
+          No se puede guardar el trabajo: {storageError || captureQueue.storageError} La bandeja está en pausa y se reintentará sola.
+          {hydratedRef.current && (
+            <button type="button" className="btn btn-small" onClick={() => { void persistWorkspace().catch(() => {}); }}>Reintentar ahora</button>
+          )}
         </div>
       )}
       {aiConfig && aiConfig.hasApiKey === false && (

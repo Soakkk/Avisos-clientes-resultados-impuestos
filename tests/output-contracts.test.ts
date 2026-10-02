@@ -119,11 +119,12 @@ Asesoría E. Marín`);
 
 // Huella del HTML de la ficha: cualquier cambio en su maqueta obliga a revisarla
 // a propósito. Actualizada tras corregir recortes, interlineado de los importes,
-// meses en minúscula y el texto «Resultado de la liquidación».
+// meses en minúscula, el texto «Resultado de la liquidación» y la cabecera
+// centrada (impuesto, modelo y periodo, y debajo el cliente) en los tres formatos.
 const CARD_HASHES: Record<CardFormat, string> = {
-  A: '5e183824bf0af4b6b5fc4177465f13feac9672906dd8cce54eb970a71e4d651a',
-  B: 'be7661aba150dd222de622901ff8b56b4a3fb6f0f4c6f82b4bbe19f11942479e',
-  C: '7efca5ec95d6b5f8f56f90ee28fba5157a6bd8e68e248b9d3325e385a3d436f3',
+  A: 'a87bebbf3fce57d2239e749dff0925d6b15e54f82c8f4bebfa0dafe4be263146',
+  B: 'a8fc5924d902838bff6be822d207c30d4f00bd83235d72a5b6391796c4f10fff',
+  C: '11036efdb804e68eeca079b100a430fd83926a3d87186d1b9ec884c2fd2779d5',
 };
 
 for (const format of ['A', 'B', 'C'] as CardFormat[]) {

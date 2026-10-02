@@ -4,9 +4,20 @@ Documento de trabajo: qué se ha decidido, qué está hecho y qué queda pendien
 para que cualquier sesión futura (o IA) pueda continuar sin perder contexto.
 El detalle técnico vigente está en `INSTRUCTIONS_Y_CONTEXTO_IA.md`.
 
-Última actualización: 2026-09-24 (versión 1.6.0).
+Última actualización: 2026-10-02 (versión 1.6.1).
 
 ---
+
+## Hecho en la versión 1.6.1
+
+1. **La bandeja ya no se queda detenida por un fallo de guardado pasajero.**
+   El guardado no falla si el directorio de clientes compartido con el Escáner
+   está bloqueado o en otro formato; la escritura reintenta los bloqueos
+   momentáneos de Windows (EPERM/EACCES/EBUSY); el aviso rojo dice el motivo
+   real, y la app reintenta sola (o con «Reintentar ahora») y reanuda la
+   bandeja sin reiniciar.
+2. **Cabecera centrada en las fichas A, B y C**: resultado de la liquidación,
+   impuesto y, en una línea, el modelo junto al periodo; debajo, el cliente.
 
 ## Hecho en la versión 1.6.0
 

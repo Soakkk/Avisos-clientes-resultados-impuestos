@@ -30,6 +30,17 @@ export function useCaptureQueue({
   const blocked = useRef(false);
   const limit = Math.max(1, Math.floor(concurrency) || 1);
 
+  // La app vuelve a marcar el almacenamiento como listo cuando un guardado
+  // posterior funciona: entonces la bandeja se reanuda donde se quedó.
+  const wasReady = useRef(ready);
+  useEffect(() => {
+    if (ready && !wasReady.current && blocked.current) {
+      blocked.current = false;
+      setStorageError('');
+    }
+    wasReady.current = ready;
+  }, [ready]);
+
   useEffect(() => {
     if (!ready || blocked.current) return;
     void persist(state.items).then(() => setSavedItems(state.items)).catch((error) => {

@@ -31,6 +31,30 @@ test('la bandeja espera el guardado y se bloquea si el disco lo rechaza', async 
   }
 });
 
+test('la bandeja se reanuda cuando el almacenamiento vuelve a estar listo', async () => {
+  const root = createRoot(document.createElement('div'));
+  let failing = true;
+  let processed = 0;
+  let queue: ReturnType<typeof useCaptureQueue>;
+  const process = async () => { processed++; return { jointId: 'cliente' }; };
+  const persist = async () => { if (failing) throw new Error('EPERM'); };
+  function Harness({ ready }: { ready: boolean }) {
+    queue = useCaptureQueue({ ready, initialItems: [{ id: 'a', fileId: 'a', status: 'pending', attempts: 0, createdAt: '2026-09-13' }], process, persist });
+    return null;
+  }
+  try {
+    await act(async () => { root.render(createElement(Harness, { ready: true })); });
+    assert.match(queue!.storageError, /EPERM/);
+    assert.equal(processed, 0);
+    await act(async () => { root.render(createElement(Harness, { ready: false })); });
+    failing = false;
+    await act(async () => { root.render(createElement(Harness, { ready: true })); });
+    assert.equal(queue!.storageError, '');
+    assert.equal(processed, 1);
+    assert.deepEqual(queue!.items.map((item) => item.status), ['review']);
+  } finally { await act(async () => { root.unmount(); }); }
+});
+
 test('la bandeja persiste cada transición antes de continuar con otra captura', async () => {
   const root = createRoot(document.createElement('div'));
   const events: string[] = [];

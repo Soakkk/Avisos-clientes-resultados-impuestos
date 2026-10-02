@@ -1,7 +1,7 @@
-import { randomUUID } from 'node:crypto';
-import { mkdir, open, readFile, readdir, rename, stat, unlink } from 'node:fs/promises';
+import { readFile, readdir, stat, unlink } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { atomicWrite, atomicWriteJson } from './atomicWrite';
 import { serializeStorage } from './transactions';
 import type {
   ArchivedNotice,
@@ -55,20 +55,6 @@ export function compactState(state: NoticeState): NoticeState {
 
 export function defaultNoticeStoragePath(): string {
   return path.join(os.homedir(), '.generador-avisos-fiscales', 'workspace');
-}
-
-async function atomicWriteJson(filePath: string, value: unknown): Promise<void> {
-  return atomicWrite(filePath, Buffer.from(JSON.stringify(value, null, 2)));
-}
-
-async function atomicWrite(filePath: string, contents: Buffer): Promise<void> {
-  await mkdir(path.dirname(filePath), { recursive: true });
-  const temporary = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
-  try {
-    const file = await open(temporary, 'wx');
-    try { await file.writeFile(contents); await file.sync(); } finally { await file.close(); }
-    await rename(temporary, filePath);
-  } finally { await unlink(temporary).catch(() => {}); }
 }
 
 export class NoticeRepository {
