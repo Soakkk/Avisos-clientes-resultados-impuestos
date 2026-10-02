@@ -5,7 +5,7 @@ import os from "os";
 import dotenv from "dotenv";
 import { GoogleGenAI } from "@google/genai";
 import { NoticeRepository } from "./src/storage/noticeRepository";
-import { createStorageRouter } from "./src/storage/router";
+import { createStorageRouter, storageErrorHandler } from "./src/storage/router";
 import { ClientDirectory } from "./src/storage/clientDirectory";
 import { ConfigStore, RECOMMENDED_MODELS, MAX_CONCURRENCY, normalizeSettings, type AiSettings } from "./src/server/aiSettings";
 import { describeGeminiError, geminiErrorStatus, parseImagePayload, readTaxCapture, withTimeout } from "./src/server/taxReader";
@@ -48,6 +48,9 @@ const noticeRepository = new NoticeRepository(CONFIG_DIR);
 const clientDirectory = new ClientDirectory();
 
 app.use(createStorageRouter(noticeRepository, clientDirectory));
+// Responde en JSON con el motivo (también si la petición no llega a leerse,
+// p. ej. por tamaño) para que la app pueda decir por qué no se guardó.
+app.use("/api", storageErrorHandler);
 
 // El barrido conserva cualquier captura todavía referenciada por la bandeja,
 // avisos activos o historial; solo elimina huérfanos antiguos.

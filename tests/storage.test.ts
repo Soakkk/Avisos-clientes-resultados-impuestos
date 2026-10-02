@@ -6,7 +6,8 @@ import test from 'node:test';
 import express from 'express';
 import { ClientDirectory } from '../src/storage/clientDirectory';
 import { MAX_ARCHIVED_NOTICES, NoticeRepository } from '../src/storage/noticeRepository';
-import { createStorageRouter } from '../src/storage/router';
+import { renameWithRetry } from '../src/storage/atomicWrite';
+import { createStorageRouter, storageErrorHandler } from '../src/storage/router';
 import type { ArchivedNotice, NoticeState } from '../src/storage/types';
 
 const makeRoot = () => mkdtemp(path.join(tmpdir(), 'avisos-storage-'));
@@ -302,4 +303,73 @@ test('el directorio devuelve el último IBAN conocido de un NIF', async () => {
   await directory.mergeVerified({ nif: '12345678Z', fields: { iban: { value: 'ES7100302053091234567895', verified: true } } }, 'avisos-fiscales');
   assert.deepEqual(await directory.lookup('12345678z'), { iban: 'ES7100302053091234567895' });
   assert.equal(await directory.lookup('00000000T'), null);
+});
+
+const startApi = async (repository: NoticeRepository, directory?: ClientDirectory, limit = '20mb') => {
+  const application = express();
+  application.use(express.json({ limit }));
+  application.use(createStorageRouter(repository, directory));
+  application.use('/api', storageErrorHandler);
+  const server = application.listen(0, '127.0.0.1');
+  await new Promise<void>((resolve) => server.once('listening', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  return {
+    base: `http://127.0.0.1:${address.port}`,
+    close: () => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
+  };
+};
+
+const errno = (code: string) => Object.assign(new Error(`${code}: operation not permitted`), { code });
+
+test('el renombrado reintenta los bloqueos pasajeros de Windows', async () => {
+  let calls = 0;
+  await renameWithRetry('a', 'b', { delays: [1, 1, 1], renameFile: async () => { if (++calls < 3) throw errno('EPERM'); } });
+  assert.equal(calls, 3);
+
+  calls = 0;
+  await assert.rejects(renameWithRetry('a', 'b', { delays: [1, 1], renameFile: async () => { calls++; throw errno('EBUSY'); } }), /EBUSY/);
+  assert.equal(calls, 3, 'Se rinde tras agotar los reintentos');
+
+  calls = 0;
+  await assert.rejects(renameWithRetry('a', 'b', { delays: [1, 1], renameFile: async () => { calls++; throw errno('ENOENT'); } }), /ENOENT/);
+  assert.equal(calls, 1, 'Un error que no es pasajero no se reintenta');
+});
+
+test('la bandeja se guarda aunque el directorio de clientes compartido falle', async () => {
+  const root = await makeRoot();
+  const file = path.join(root, 'clientes.json');
+  await writeFile(file, '{ esto no es JSON');
+  const repository = new NoticeRepository(root);
+  const api = await startApi(repository, new ClientDirectory(file));
+  try {
+    const state = emptyState();
+    state.activeNotices = [taxNotice({ verificacion: { estado: 'ok', checks: [] } })];
+    const saved = await fetch(`${api.base}/api/notices/state`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(state),
+    });
+    assert.equal(saved.status, 204);
+    assert.equal((await repository.loadQueue()).activeNotices.length, 1);
+    assert.equal(await readFile(file, 'utf8'), '{ esto no es JSON', 'El archivo ajeno no se toca');
+  } finally { await api.close(); }
+});
+
+test('un fallo al guardar la bandeja devuelve el motivo en JSON', async () => {
+  const root = await makeRoot();
+  const repository = new NoticeRepository(root);
+  repository.saveQueue = async () => { throw errno('EPERM'); };
+  const api = await startApi(repository, undefined, '1kb');
+  try {
+    const locked = await fetch(`${api.base}/api/notices/state`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(emptyState()),
+    });
+    assert.equal(locked.status, 500);
+    assert.match((await locked.json()).error, /bloqueado.*EPERM/);
+
+    const tooLarge = await fetch(`${api.base}/api/notices/state`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...emptyState(), relleno: 'x'.repeat(4096) }),
+    });
+    assert.equal(tooLarge.status, 413);
+    assert.match((await tooLarge.json()).error, /tamaño máximo/);
+  } finally { await api.close(); }
 });

@@ -1,7 +1,7 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
-import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { atomicWriteJson } from './atomicWrite';
 import { serializeStorage } from './transactions';
 import type {
   ClientDirectoryFile,
@@ -18,13 +18,6 @@ export function sharedClientDirectoryPath(environment = process.env): string {
       ? path.join(os.homedir(), 'AppData', 'Local')
       : path.join(os.homedir(), '.local', 'share'));
   return path.join(localAppData, 'AsesoriaEMarin', 'Suite', 'clientes.json');
-}
-
-async function atomicWriteJson(filePath: string, value: unknown): Promise<void> {
-  await mkdir(path.dirname(filePath), { recursive: true });
-  const temporary = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
-  await writeFile(temporary, JSON.stringify(value, null, 2), 'utf8');
-  await rename(temporary, filePath);
 }
 
 /** The on-disk contract is shared with Escáner; the React API remains normalized. */
