@@ -146,10 +146,9 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
     ? shortTaxName(single.modelo, single.modelo_nombre) || `Modelo ${single.modelo}`
     : 'Resumen de impuestos';
   // Con impuestos de periodos distintos se enseñan todos, no solo el primero.
-  const periodoText = summary.periods
+  const periodos = summary.periods
     .map((item) => `${periodoLabel(item.periodo)} ${item.ejercicio}`.trim())
-    .filter(Boolean)
-    .join(' · ');
+    .filter(Boolean);
   const amountLabel = (() => {
     if (summary.mode === 'domiciliado') return single ? 'Importe domiciliado' : 'Total domiciliado';
     if (res.label === 'A devolver') return single ? 'Importe a devolver' : 'Total a devolver';
@@ -169,20 +168,30 @@ export const NoticeCard: React.FC<NoticeCardProps> = ({ notice, format }) => {
     return Math.round(base * 0.68);
   };
 
-  // ---- Cabecera: título del resultado ARRIBA DEL TODO, luego el cliente ----
+  // ---- Cabecera centrada: resultado, impuesto, modelo y periodo; luego el cliente ----
+  // Va centrada en los tres formatos. Cada línea es un bloque de ancho completo
+  // con el texto centrado, no una caja ajustada a su contenido: así el redondeo
+  // de html-to-image no hace saltar de línea el texto solo en la imagen (ver la
+  // nota del Desglose). El modelo y cada periodo no se parten nunca; con varios
+  // periodos que no caben, la línea baja entera tras el «·».
   const Header = () => (
     <>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
-        <div style={{ minWidth: 0, flex: 1 }}>
-          {single && (
-            <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.07em', color: NAVY, textTransform: 'uppercase' }}>Resultado de la liquidación</div>
-          )}
-          <div style={{ fontFamily: SERIF, fontWeight: 700, fontSize: 19, color: NAVY, lineHeight: 1.2, marginTop: single ? 1 : 0, overflowWrap: 'break-word' }}>{taxBig}</div>
-          <div style={{ fontSize: 12, color: LABEL, marginTop: 3 }}>{periodoText}</div>
+      <div style={{ textAlign: 'center' }}>
+        {single && (
+          <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.07em', color: NAVY, textTransform: 'uppercase' }}>Resultado de la liquidación</div>
+        )}
+        <div style={{ fontFamily: SERIF, fontWeight: 700, fontSize: 22, color: NAVY, lineHeight: 1.2, marginTop: single ? 3 : 0, overflowWrap: 'break-word' }}>{taxBig}</div>
+        <div style={{ fontSize: 12, color: LABEL, lineHeight: 1.9, marginTop: 5 }}>
+          <span style={{ display: 'inline-block', verticalAlign: 'middle', background: NAVY, color: '#fff', fontSize: 11, fontWeight: 600, lineHeight: 1.5, padding: '2px 11px', borderRadius: 999, whiteSpace: 'nowrap', marginRight: periodos.length ? 8 : 0 }}>{chip}</span>
+          {periodos.map((periodo, i) => (
+            <React.Fragment key={periodo}>
+              {i > 0 && ' · '}
+              <span style={{ whiteSpace: 'nowrap', verticalAlign: 'middle' }}>{periodo}</span>
+            </React.Fragment>
+          ))}
         </div>
-        <span style={{ background: NAVY, color: '#fff', fontSize: 11, fontWeight: 600, padding: '3px 11px', borderRadius: 999, whiteSpace: 'nowrap', flexShrink: 0 }}>{chip}</span>
       </div>
-      <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${ROW}` }}>
+      <div style={{ marginTop: 11, paddingTop: 12, borderTop: `1px solid ${ROW}`, textAlign: 'center' }}>
         <div style={{ fontFamily: SERIF, fontSize: 16, color: INK, lineHeight: 1.3, wordBreak: 'break-word' }}>{notice.cliente_nombre}</div>
         <div style={{ fontFamily: MONO, fontSize: 12, color: LABEL, marginTop: 2, overflowWrap: 'break-word' }}>NIF {notice.cliente_nif}</div>
       </div>
