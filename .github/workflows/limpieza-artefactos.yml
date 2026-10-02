@@ -1,0 +1,55 @@
+name: Limpieza de artefactos
+
+# Borra las copias del instalador que guarda cada compilación (cada una ocupa
+# unos 115 MB y el instalador ya está en la release) y deja en el resumen de la
+# ejecución cuánto se ha liberado y cuánto queda.
+on:
+  schedule:
+    - cron: '23 6 * * 1' # los lunes por la mañana
+  workflow_dispatch:
+    inputs:
+      dias:
+        description: 'Borrar las copias con más de estos días (0 = todas)'
+        type: string
+        default: '1'
+
+permissions:
+  actions: write
+
+jobs:
+  limpiar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Borrar artefactos antiguos
+        uses: actions/github-script@v7
+        env:
+          DIAS: ${{ inputs.dias }}
+        with:
+          script: |
+            // En la ejecución programada no hay inputs: se usa 1 día.
+            const dias = /^\d+$/.test(process.env.DIAS || '') ? Number(process.env.DIAS) : 1;
+            const limite = Date.now() - dias * 24 * 60 * 60 * 1000;
+            const { owner, repo } = context.repo;
+            const artefactos = await github.paginate(github.rest.actions.listArtifactsForRepo, { owner, repo, per_page: 100 });
+            const mb = (bytes) => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+            const borrados = [];
+            let quedan = 0;
+            for (const artefacto of artefactos) {
+              if (artefacto.expired) continue;
+              if (new Date(artefacto.created_at).getTime() <= limite) {
+                await github.rest.actions.deleteArtifact({ owner, repo, artifact_id: artefacto.id });
+                borrados.push(artefacto);
+              } else {
+                quedan += artefacto.size_in_bytes;
+              }
+            }
+            const liberado = borrados.reduce((total, artefacto) => total + artefacto.size_in_bytes, 0);
+            core.info(`Borrados ${borrados.length} artefactos (${mb(liberado)}). Quedan ${mb(quedan)}.`);
+            await core.summary
+              .addHeading('Limpieza de artefactos')
+              .addRaw(`Borrados: ${borrados.length} (${mb(liberado)}). Siguen guardados: ${mb(quedan)}.`, true)
+              .addTable([
+                [{ data: 'Artefacto', header: true }, { data: 'Creado', header: true }, { data: 'Tamaño', header: true }],
+                ...borrados.map((artefacto) => [artefacto.name, artefacto.created_at, mb(artefacto.size_in_bytes)]),
+              ])
+              .write();
