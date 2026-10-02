@@ -66,6 +66,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Generador-Avisos-Fiscales-Setup
+          # El instalador ya queda en la release: esta copia (~115 MB) solo
+          # sirve para probar una compilación sin publicar, así que dura 1 día.
+          retention-days: 1
           path: |
             dist-electron/*.exe
             dist-electron/*.yml
